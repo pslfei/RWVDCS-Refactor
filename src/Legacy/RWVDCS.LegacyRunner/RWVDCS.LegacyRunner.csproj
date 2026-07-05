@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>LegacyRunner</AssemblyName>
+    <!-- 引用老系统已编译产物（只读），不复制：运行目录用 stage-legacy.ps1 生成 -->
+    <EnableDefaultNoneItems>true</EnableDefaultNoneItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <LegacyBin>D:\项目\睿渥\RWVDCS\Simulator\bin\x86\Debug</LegacyBin>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="DCS">
+      <HintPath>$(LegacyBin)\DCS.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DCSBase">
+      <HintPath>$(LegacyBin)\DCSBase.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DCSCommon">
+      <HintPath>$(LegacyBin)\DCSCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DCSType">
+      <HintPath>$(LegacyBin)\DCSType.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RTD">
+      <HintPath>$(LegacyBin)\RTD.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TDK.Core.DAL">
+      <HintPath>$(LegacyBin)\TDK.Core.DAL.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
