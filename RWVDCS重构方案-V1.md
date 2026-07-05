@@ -211,8 +211,8 @@ Live Arena（每 DPU）
 
 | 工具 | 说明 |
 | --- | --- |
-| **工程编译器** | `System.Data.OleDb`(ACE) 直读 Configure.mdb 的 `Prj_*`/`Cld_*`/`Cfg_VarSystem`/`Meta_*` → 产出运行时镜像（点目录、块实例表、执行顺序表、拷贝计划）；附带缓存（mdb 未变则秒开） |
-| **旧工况导入器** | 独立 x86 .NET Framework 4.7.2 小程序，只读引用老 DLL 加载 .wrk → 枚举全部点/块字段 → 导出 `名字→值` 中间格式 → 新系统按名导入（不逆向伪对象二进制格式，稳妥） |
+| **工程编译器** | `System.Data.OleDb`(ACE) 直读 Configure.mdb 的 `Prj_*`/`Cld_*`/`Cfg_VarSystem`/`Meta_*` → 产出运行时镜像（点目录、块实例表、执行顺序表、拷贝计划）；附带缓存（mdb 未变则秒开）。**已实现**：`src/Engineering`（行序按 mdb 自然序对齐 NHibernate 语义） |
+| **旧工况导入器** | 独立 x86 .NET Framework 4.7.2 小程序，只读引用老 DLL 加载 .wrk → 枚举全部点/块字段 → 导出 `名字→值` 中间格式 → 新系统按名导入（不逆向伪对象二进制格式，稳妥）。**已实现并验证**：`LegacyRunner --export-state` + `Host --import-legacy` + `scripts/migrate-wrk.ps1`，c0 迁移 289,261 点按位一致；详见 `docs/工况快照与wrk迁移.md` |
 | **ParityRunner（对账台）** | 同一工程分别驱动老 Simulator（Remoting `IConsole.SingleStepDCS` + HTTP 批量读）与新内核，锁步 N 周期，逐点对账（默认 bit-exact，可配 epsilon），输出差异报告；支持注入相同的写值/强制序列 |
 | **FB 黄金测试** | 对 106 个块逐块生成输入向量（从老系统采集），断言新旧输出逐周期一致；作为回归套件常驻 CI |
 | **Remoting 过渡适配器**（按需） | 若现场有必须保留的 Remoting 客户端（画面等）：一个 .NET Fx 4.7.2 进程实现 `ICommunication`/`IConsole`/`IEdit`，转发到新内核 HTTP/gRPC。新客户端一律走 HTTP |
@@ -340,6 +340,9 @@ PoC 门槛（M0 必须过，否则调整方案）：
 | Q5 | 对账精度：目标 bit-exact，允许阶段性 epsilon | 已确认（随 Q1 主线） |
 | Q6 | 新代码位置：`D:\项目\睿渥\RWVDCS重构\src`，解决方案名 `RWVDCS.Next` | 已确认 |
 | Q7 | 宏块/HOLLYSYS 块 | **本期只迁当前实际编译的 106 个 RW 块**；114 个宏块后续单独立项 |
+| Q8 | 工程库实际文件：`VDCS(RuiWo)--260615.mdb`；`cld_` 前缀含义 = control logic document | 已确认（2026-07-05 补充）；直读 OleDb，不用 NHibernate |
+| Q9 | .wrk 在新系统不再使用：新工况用 Arena 镜像快照（目录 = manifest + 每 DPU .arena）；另提供 .wrk 一次性迁移工具 | 已确认并实现（`docs/工况快照与wrk迁移.md`） |
+| Q10 | 迁移续跑对账发现的 44 处逻辑差异：归因老系统 LoadFile 后连接性 bug（点与 live 引脚不一致），新系统不做 bug-for-bug 复刻 | 2026-07-06 验证（同文档 §3.4） |
 
 ---
 
