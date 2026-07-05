@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>rwvdcs</AssemblyName>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\RWVDCS.Core\RWVDCS.Core.csproj" />
+    <ProjectReference Include="..\..\Engineering\RWVDCS.Engineering\RWVDCS.Engineering.csproj" />
+    <ProjectReference Include="..\..\Runtime\RWVDCS.Runtime\RWVDCS.Runtime.csproj" />
+    <ProjectReference Include="..\..\Blocks\RWVDCS.Blocks\RWVDCS.Blocks.csproj" />
+  </ItemGroup>
+
+</Project>
