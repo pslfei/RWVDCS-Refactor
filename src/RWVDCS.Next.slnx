@@ -1,11 +1,30 @@
 <Solution>
+  <Folder Name="/Blocks/">
+    <Project Path="Blocks/RWVDCS.Blocks/RWVDCS.Blocks.csproj" />
+  </Folder>
   <Folder Name="/Core/">
     <Project Path="Core/RWVDCS.Core/RWVDCS.Core.csproj" />
     <Project Path="Core/RWVDCS.Hosting/RWVDCS.Hosting.csproj" />
     <Project Path="Core/RWVDCS.LowLevel/RWVDCS.LowLevel.csproj" />
   </Folder>
+  <Folder Name="/Engineering/">
+    <Project Path="Engineering/RWVDCS.Engineering/RWVDCS.Engineering.csproj" />
+  </Folder>
+  <Folder Name="/Runtime/">
+    <Project Path="Runtime/RWVDCS.Runtime/RWVDCS.Runtime.csproj" />
+  </Folder>
+  <Folder Name="/Host/">
+    <Project Path="Host/RWVDCS.Host/RWVDCS.Host.csproj" />
+  </Folder>
   <Folder Name="/Tests/">
     <Project Path="Tests/RWVDCS.Benchmarks/RWVDCS.Benchmarks.csproj" />
     <Project Path="Tests/RWVDCS.Core.Tests/RWVDCS.Core.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Tools/">
+    <Project Path="Tools/RWVDCS.Tools.MdbDump/RWVDCS.Tools.MdbDump.csproj" />
+    <Project Path="Tools/RWVDCS.Tools.ParityCompare/RWVDCS.Tools.ParityCompare.csproj" />
+  </Folder>
+  <Folder Name="/Legacy/">
+    <Project Path="Legacy/RWVDCS.LegacyRunner/RWVDCS.LegacyRunner.csproj" />
   </Folder>
 </Solution>

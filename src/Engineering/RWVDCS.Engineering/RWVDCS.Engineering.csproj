@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- OleDb 仅 Windows 可用；本模块负责直读 Access 工程库（Cld_ = Control Logic Document）。 -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Data.OleDb" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\RWVDCS.Core\RWVDCS.Core.csproj" />
+  </ItemGroup>
+
+</Project>

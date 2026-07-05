@@ -24,15 +24,15 @@ public enum VariableClass
 }
 
 /// <summary>
-/// 管脚类别。与老系统 DCSCommon.PinTypes 逐值对齐（组态/元数据契约）。
+/// 管脚类别。与老系统 DCSCommon.PinTypes 逐值对齐（Input=0 … None=6，参与元数据契约，勿改顺序）。
 /// </summary>
-public enum PinKind
+public enum PinTypes
 {
-    None = 0,
-    Input,
+    Input = 0,
     Output,
     IO,
     Constant,
     Internal,
     Cascaded,
+    None,
 }
