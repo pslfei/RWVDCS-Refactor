@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    本项目是整个新系统中唯一允许 unsafe 的项目（方案 §5：唯一的 AcquirePointer
+    封装在一个小型审计类里）。除 MappedMemory 外不得添加任何其他职责。
+  -->
+  <PropertyGroup>
+    <RootNamespace>RWVDCS.LowLevel</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+</Project>

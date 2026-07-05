@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    FB 宿主：Roslyn 内存编译 + 可回收 AssemblyLoadContext 热装卸（方案 §4.3）。
+    这是"现调现改 function code"能力在新架构下的承载点。
+  -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\RWVDCS.Core\RWVDCS.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/Core/">
+    <Project Path="Core/RWVDCS.Core/RWVDCS.Core.csproj" />
+    <Project Path="Core/RWVDCS.Hosting/RWVDCS.Hosting.csproj" />
+    <Project Path="Core/RWVDCS.LowLevel/RWVDCS.LowLevel.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="Tests/RWVDCS.Benchmarks/RWVDCS.Benchmarks.csproj" />
+    <Project Path="Tests/RWVDCS.Core.Tests/RWVDCS.Core.Tests.csproj" />
+  </Folder>
+</Solution>
