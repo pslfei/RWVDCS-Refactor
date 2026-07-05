@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 块源码自老系统原样移植（C# 5 时代风格），关闭 nullable 以保持源码零改动。 -->
+    <Nullable>disable</Nullable>
+    <!-- CS0282：MA/DMS/VSETR 在 _RUN.cs 分部里也声明了字段。新系统不依赖 CLR 字段布局
+         （状态快照按字段名 + 显式描述符定序），该警告无害。 -->
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS0649;IDE0044;CS0282</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\RWVDCS.Core\RWVDCS.Core.csproj" />
+  </ItemGroup>
+
+</Project>
