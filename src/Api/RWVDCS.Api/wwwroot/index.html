@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RWVDCS.Next 管理台</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">RWVDCS<span>.Next</span></div>
+    <div id="project-info" class="project-info">未装载工程</div>
+    <div class="top-controls">
+      <span id="run-state" class="badge state-stopped">停止</span>
+      <button id="btn-run" class="btn btn-run" title="连续运行">▶ 运行</button>
+      <button id="btn-pause" class="btn" title="周期边界暂停">⏸ 暂停</button>
+      <span class="step-group">
+        <button id="btn-step" class="btn" title="单步">⏭ 单步</button>
+        <input id="step-cycles" type="number" value="1" min="1" max="100000" title="单步周期数">
+      </span>
+      <button id="btn-stop" class="btn btn-danger" title="停止扫描线程">⏹ 停止</button>
+    </div>
+  </header>
+
+  <nav id="sidebar">
+    <a href="#/dashboard" data-view="dashboard">总览</a>
+    <a href="#/browse" data-view="browse">点与功能块</a>
+    <a href="#/pointinfo" data-view="pointinfo">PointInfo</a>
+    <a href="#/store" data-view="store">工况与快照</a>
+    <a href="#/download" data-view="download">在线下装</a>
+    <a href="#/versions" data-view="versions">版本档案</a>
+    <a href="#/logs" data-view="logs">运行日志</a>
+  </nav>
+
+  <main id="main"></main>
+
+  <div id="toast-box"></div>
+  <div id="modal-root"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

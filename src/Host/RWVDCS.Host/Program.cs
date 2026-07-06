@@ -24,6 +24,10 @@ internal static class Program
             return 0;
         }
 
+        // Web 管理台模式（RuntimeHost + Kestrel + 静态界面），与经典 CLI 模式互斥
+        if (args.Contains("--web"))
+            return WebHost.Run(args);
+
         string mdbPath = args[0];
         int steps = 0, runSeconds = -1, soakSteps = 0, monitorInterval = 5;
         string? saveDir = null, loadDir = null, dumpFile = null, arenaDir = null, importLegacy = null;
@@ -563,6 +567,13 @@ internal static class Program
               --arena <目录>          Arena 使用 MMF 后备文件（默认纯内存）
               --no-firstrun           跳过 FirstRun
               --repl                  进入交互模式
+
+            Web 管理台模式（可不带 mdb 空载启动，从界面装载工程）:
+              rwvdcs [工程.mdb] --web [端口] [--data 目录] [--arena 目录] [--start] [--no-history]
+                --web [端口]          启动 Web 管理台 + REST/SSE 接口（默认 8080）
+                --data <目录>         数据目录：工况/快照仓库、版本档案、历史站（默认 ./rwvdcs-data）
+                --start               装载后自动开始连续运行
+                --no-history          关闭内嵌历史站
             """);
     }
 }
