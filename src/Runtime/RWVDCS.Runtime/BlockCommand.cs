@@ -266,4 +266,65 @@ public sealed class BlockCommand : ICommand
 
         _forceState[pinName] = (isForced, forceValue);
     }
+
+    /// <summary>当前强制表（管脚名 → (是否强制, 强制值)；无强制时 null）。Web/接口检视用。</summary>
+    public IReadOnlyDictionary<string, (bool IsForced, object? ForceValue)>? ForceStates => _forceState;
+
+    /// <summary>把另一命令的强制状态搬过来（在线下装换代时保留强制，DeltaV 下装同语义）。</summary>
+    internal void CopyForceStateFrom(BlockCommand other)
+    {
+        if (other._forceState is { Count: > 0 })
+            _forceState = new Dictionary<string, (bool, object?)>(other._forceState, StringComparer.Ordinal);
+        if (other._preForceValues is { Count: > 0 })
+            _preForceValues = new Dictionary<string, object?>(other._preForceValues, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// 直接写块字段（规格数/内部变量的在线修改入口，语义对齐老系统装配期 ApplyConstant：
+    /// 类型匹配直写；值类型 Convert.ChangeType；string 用 ToString）。返回是否写成功。
+    /// </summary>
+    public bool SetField(string fieldName, object value)
+    {
+        var fi = Fc.GetType().GetField(fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+        if (fi == null)
+            return false;
+
+        try
+        {
+            if (fi.FieldType.IsInstanceOfType(value))
+            {
+                fi.SetValue(Fc, value);
+                return true;
+            }
+            // 管脚结构体（LA/LD/LP/LP32）：写其 Value（走报警/强制语义）
+            if (fi.GetValue(Fc) is IValuable pin && typeof(IValuable).IsAssignableFrom(fi.FieldType))
+            {
+                pin.Value = value;
+                fi.SetValue(Fc, pin);
+                return true;
+            }
+            if (fi.FieldType.IsEnum)
+            {
+                fi.SetValue(Fc, value is string s
+                    ? Enum.Parse(fi.FieldType, s, ignoreCase: true)
+                    : Enum.ToObject(fi.FieldType, Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture)));
+                return true;
+            }
+            if (fi.FieldType.IsValueType)
+            {
+                fi.SetValue(Fc, Convert.ChangeType(value, fi.FieldType, System.Globalization.CultureInfo.InvariantCulture));
+                return true;
+            }
+            if (fi.FieldType == typeof(string))
+            {
+                fi.SetValue(Fc, value.ToString());
+                return true;
+            }
+        }
+        catch
+        {
+        }
+        return false;
+    }
 }

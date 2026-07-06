@@ -8,6 +8,37 @@ public sealed class EngineeringModel
 {
     public required string ProjectPath { get; init; }
     public required IReadOnlyList<ControllerModel> Controllers { get; init; }
+
+    /// <summary>
+    /// 深克隆。装配（RuntimeBuilder）会就地改写管脚的 PointName/Reversed
+    /// （pin-point 源块输出追加、逗号拆分粘滞取反），因此需要保留纯净副本
+    /// 用于工程指纹、在线下装 diff。克隆体给装配器改写，纯净体存档。
+    /// </summary>
+    public EngineeringModel Clone() => new()
+    {
+        ProjectPath = ProjectPath,
+        Controllers = Controllers.Select(c => new ControllerModel
+        {
+            Id = c.Id,
+            Address = c.Address,
+            Name = c.Name,
+            Points = c.Points, // PointModel 全部 init-only，不可变，可共享
+            Blocks = c.Blocks.Select(b => new BlockModel
+            {
+                Name = b.Name,
+                FcName = b.FcName,
+                Description = b.Description,
+                Pins = b.Pins.Select(p => new PinDetailModel
+                {
+                    PinName = p.PinName,
+                    PointName = p.PointName,
+                    Reversed = p.Reversed,
+                    HasDefaultValue = p.HasDefaultValue,
+                    DefaultValue = p.DefaultValue,
+                }).ToList(),
+            }).ToList(),
+        }).ToList(),
+    };
 }
 
 /// <summary>控制器（≈ 一个 DPU）。</summary>

@@ -35,6 +35,24 @@ public sealed class DpuRuntime : IDpu, IDisposable
     /// <summary>DB 点槽数量（SID [0, N) 为工程库点；其后是中间点与块槽）。历史站按此圈定记录范围。</summary>
     public int DbPointSlotCount { get; internal set; }
 
+    /// <summary>
+    /// 装配完成时（FirstRun 前）的数据区基线镜像（Brotli 压缩）。
+    /// 增量快照 = 当前数据区 vs 基线的变化槽位集合；恢复 = 基线回填 + 变化槽回放。
+    /// </summary>
+    internal byte[]? InitialDataCompressed { get; set; }
+
+    /// <summary>解压基线镜像（长度 = Arena.DataRegionLength）。</summary>
+    internal byte[] DecompressInitialData()
+    {
+        if (InitialDataCompressed == null)
+            throw new InvalidOperationException($"DPU {Name} 未捕获基线镜像（旧版装配路径？）");
+        var output = new byte[Arena.DataRegionLength];
+        using var ms = new MemoryStream(InitialDataCompressed);
+        using var br = new System.IO.Compression.BrotliStream(ms, System.IO.Compression.CompressionMode.Decompress);
+        br.ReadExactly(output);
+        return output;
+    }
+
     /// <summary>扫描周期（秒）。老系统 get=cycle/1000，set 时小于 0.01 忽略（Dpu.cs:204-215）。</summary>
     public float Cycle
     {

@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using RWVDCS.Core.Blocks;
+using RWVDCS.Core.Types;
 using RWVDCS.Engineering;
 
 namespace RWVDCS.Runtime;
@@ -188,8 +189,10 @@ public sealed class BlockHotSwapper
     /// <summary>
     /// 按字段名转移块状态（旧实例 → 新实例）。同名同型直拷；数组按元素拷（截断到新容量）；
     /// 值类型尝试 Convert 转换；其余跳过。返回成功转移的字段数。
+    /// <paramref name="skipConstants"/>：在线下装时置 true——规格数（Constant 管脚）
+    /// 取新工程装配值，不从旧状态转移（热更换代则全转移：工程没变，保留在线改过的参数）。
     /// </summary>
-    internal static int TransferState(Function from, Function to)
+    internal static int TransferState(Function from, Function to, bool skipConstants = false)
     {
         var src = BlockStateSchema.For(from.GetType());
         var dst = BlockStateSchema.For(to.GetType());
@@ -197,6 +200,8 @@ public sealed class BlockHotSwapper
 
         foreach (var d in dst.Fields)
         {
+            if (skipConstants && d.PinType == PinTypes.Constant)
+                continue;
             if (!src.TryGetField(d.Name, out var s))
                 continue;
 

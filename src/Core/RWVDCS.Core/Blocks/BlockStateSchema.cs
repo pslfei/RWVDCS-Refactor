@@ -46,6 +46,12 @@ public sealed class BlockStateSchema
     public IReadOnlyList<BlockStateField> Fields { get; }
     public int ByteLength { get; }
 
+    /// <summary>
+    /// 布局指纹（FNV-1a：字段名+种类+偏移+长度）。两个类型布局哈希相同 ⇒ 状态槽字节可直拷；
+    /// 不同 ⇒ 跨版本快照需走字段级按名转换。
+    /// </summary>
+    public long LayoutHash { get; }
+
     private readonly Dictionary<string, BlockStateField> _byName;
 
     private BlockStateSchema(Type blockType)
@@ -70,6 +76,28 @@ public sealed class BlockStateSchema
 
         Fields = fields;
         ByteLength = offset;
+        LayoutHash = ComputeLayoutHash(fields);
+    }
+
+    private static long ComputeLayoutHash(List<BlockStateField> fields)
+    {
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        ulong hash = offsetBasis;
+        void Mix(int v)
+        {
+            for (int i = 0; i < 4; i++)
+                hash = (hash ^ (byte)(v >> (i * 8))) * prime;
+        }
+        foreach (var f in fields)
+        {
+            foreach (char c in f.Name)
+                hash = (hash ^ (byte)c) * prime;
+            Mix((int)f.Kind);
+            Mix(f.Offset);
+            Mix(f.ByteLength);
+        }
+        return unchecked((long)hash);
     }
 
     public static BlockStateSchema For(Type blockType)

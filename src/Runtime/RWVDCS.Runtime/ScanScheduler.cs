@@ -136,10 +136,13 @@ public sealed class ScanScheduler : IDisposable
         }
     }
 
-    /// <summary>暂停连续运行；返回时保证当前周期已经完整结束（周期边界）。</summary>
+    /// <summary>
+    /// 暂停连续运行；返回时保证当前周期已经完整结束（周期边界）。
+    /// Stopped 态也可进入 Paused（"就绪待单步"，下装后恢复暂停态用）。
+    /// </summary>
     public void Pause()
     {
-        if (_state == ScanState.Running)
+        if (_state != ScanState.Paused)
             _state = ScanState.Paused;
         lock (_gate)
         {

@@ -172,6 +172,27 @@ public sealed class PointArena : IDisposable
     public void WriteField<T>(long fsid, in T value) where T : unmanaged
         => WriteField(Fsid.GetSid(fsid), Fsid.GetOffset(fsid), in value);
 
+    /// <summary>数据区总长（字节）。</summary>
+    public int DataRegionLength => (int)(_memory.Span.Length - _dataOffset);
+
+    /// <summary>数据区只读视图（基线捕获/增量快照用）。</summary>
+    public ReadOnlySpan<byte> DataRegion => _memory.Span.Slice((int)_dataOffset, DataRegionLength);
+
+    /// <summary>整体覆写数据区（恢复基线用；长度必须一致）。</summary>
+    public void RestoreDataRegion(ReadOnlySpan<byte> data)
+    {
+        if (data.Length != DataRegionLength)
+            throw new ArgumentException($"数据区长度不符：{data.Length} ≠ {DataRegionLength}");
+        data.CopyTo(_memory.Span.Slice((int)_dataOffset));
+    }
+
+    /// <summary>槽位在数据区内的（偏移, 长度）。</summary>
+    public (int Offset, int Length) GetSlotExtent(int sid)
+    {
+        var entry = _directory[sid];
+        return (entry.ByteOffset, entry.ByteLength);
+    }
+
     /// <summary>槽间拷贝（等价老系统 MemoryManage.Copy 的核心路径，可选按位取反）。</summary>
     public void CopySlot(int srcSid, uint srcOffset, int dstSid, uint dstOffset, int length, bool negate = false)
     {

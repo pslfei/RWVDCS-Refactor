@@ -230,6 +230,18 @@ public static class RuntimeBuilder
 
         var dpu = new DpuRuntime(controller.Id, dpuName, arena, localSlots) { DbPointSlotCount = dbPointSlots };
 
+        // 基线镜像：装配初值状态（FirstRun 前）的数据区压缩副本，增量快照的参照系。
+        // Brotli quality=1（速度优先）；90MB 数据区压缩 ~ 数百 ms、驻留内存缩到 ~2-5%。
+        {
+            using var ms = new MemoryStream();
+            using (var br = new System.IO.Compression.BrotliStream(
+                       ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            {
+                br.Write(arena.DataRegion);
+            }
+            dpu.InitialDataCompressed = ms.ToArray();
+        }
+
         // ---- 逐块构造命令（Command ctor 语义）
         foreach (var (block, fcType, stateSid) in commandPlans)
         {
