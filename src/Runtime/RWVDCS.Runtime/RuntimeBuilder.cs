@@ -153,6 +153,7 @@ public static class RuntimeBuilder
         var localSlots = new Dictionary<string, PointSlotRef>(StringComparer.OrdinalIgnoreCase);
         var plannedKinds = new List<PointKind>();   // 按 SID 序
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int dbPointSlots = 0;
 
         foreach (var p in controller.Points)
         {
@@ -166,6 +167,7 @@ public static class RuntimeBuilder
             builder.AddRawSlot(p.Name, PointLayout.TypeIdOf(kind), PointLayout.SizeOf(kind), BuildPointInitBytes(p, kind));
             plannedKinds.Add(kind);
             report.PointCount++;
+            dbPointSlots++;
         }
 
         foreach (var name in intermediateNames)
@@ -226,7 +228,7 @@ public static class RuntimeBuilder
             globalSlots.TryAdd(name, slotRef); // 跨 DPU 首见生效（控制器注册序）
         }
 
-        var dpu = new DpuRuntime(controller.Id, dpuName, arena, localSlots);
+        var dpu = new DpuRuntime(controller.Id, dpuName, arena, localSlots) { DbPointSlotCount = dbPointSlots };
 
         // ---- 逐块构造命令（Command ctor 语义）
         foreach (var (block, fcType, stateSid) in commandPlans)
@@ -287,8 +289,9 @@ public static class RuntimeBuilder
 
     // =================================================================
     // 单块命令构造（对齐 Command ctor：Command.cs:1729-2241）
+    // internal：热更换代（BlockHotSwapper）用同一套构造语义重建命令
     // =================================================================
-    private static BlockCommand BuildCommand(
+    internal static BlockCommand BuildCommand(
         BlockModel block,
         Type fcType,
         int stateSid,
@@ -537,22 +540,27 @@ public static class RuntimeBuilder
     private static void ResolveBindings(DpuRuntime dpu, Dictionary<string, PointSlotRef> globalSlots, RuntimeBuildReport report)
     {
         foreach (var cmd in dpu.Commands)
-        {
-            foreach (var b in cmd.InputBindings)
-            {
-                if (dpu.LocalSlots.TryGetValue(b.PointName, out var slot) || globalSlots.TryGetValue(b.PointName, out slot))
-                    b.Source = slot;
-                if (b.Source is not { IsRealPoint: true })
-                    report.DeadInputBindings++;
-            }
+            ResolveCommandBindings(cmd, dpu, globalSlots, report);
+    }
 
-            foreach (var b in cmd.OutputBindings)
-            {
-                if (dpu.LocalSlots.TryGetValue(b.PointName, out var slot) || globalSlots.TryGetValue(b.PointName, out slot))
-                    b.Target = slot;
-                if (b.Target is not { IsRealPoint: true })
-                    report.DeadOutputBindings++;
-            }
+    /// <summary>解析单命令的接线（构建期与热更换代共用）。</summary>
+    internal static void ResolveCommandBindings(
+        BlockCommand cmd, DpuRuntime dpu, Dictionary<string, PointSlotRef> globalSlots, RuntimeBuildReport report)
+    {
+        foreach (var b in cmd.InputBindings)
+        {
+            if (dpu.LocalSlots.TryGetValue(b.PointName, out var slot) || globalSlots.TryGetValue(b.PointName, out slot))
+                b.Source = slot;
+            if (b.Source is not { IsRealPoint: true })
+                report.DeadInputBindings++;
+        }
+
+        foreach (var b in cmd.OutputBindings)
+        {
+            if (dpu.LocalSlots.TryGetValue(b.PointName, out var slot) || globalSlots.TryGetValue(b.PointName, out slot))
+                b.Target = slot;
+            if (b.Target is not { IsRealPoint: true })
+                report.DeadOutputBindings++;
         }
     }
 

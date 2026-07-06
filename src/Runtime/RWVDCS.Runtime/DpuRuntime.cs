@@ -32,6 +32,9 @@ public sealed class DpuRuntime : IDpu, IDisposable
     /// <summary>命令表（Cld_FCBlock 装载序 = 老系统执行序）。</summary>
     public List<BlockCommand> Commands { get; } = [];
 
+    /// <summary>DB 点槽数量（SID [0, N) 为工程库点；其后是中间点与块槽）。历史站按此圈定记录范围。</summary>
+    public int DbPointSlotCount { get; internal set; }
+
     /// <summary>扫描周期（秒）。老系统 get=cycle/1000，set 时小于 0.01 忽略（Dpu.cs:204-215）。</summary>
     public float Cycle
     {

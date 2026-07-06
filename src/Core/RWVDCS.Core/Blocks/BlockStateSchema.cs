@@ -39,8 +39,8 @@ public sealed record BlockStateField(
 /// </summary>
 public sealed class BlockStateSchema
 {
-    private static readonly Dictionary<Type, BlockStateSchema> Cache = [];
-    private static readonly Lock CacheLock = new();
+    // ConditionalWeakTable：热更换代后旧块类型（可回收 ALC 中）不被缓存钉住，ALC 可真卸载
+    private static readonly ConditionalWeakTable<Type, BlockStateSchema> Cache = new();
 
     public Type BlockType { get; }
     public IReadOnlyList<BlockStateField> Fields { get; }
@@ -73,17 +73,7 @@ public sealed class BlockStateSchema
     }
 
     public static BlockStateSchema For(Type blockType)
-    {
-        lock (CacheLock)
-        {
-            if (!Cache.TryGetValue(blockType, out var schema))
-            {
-                schema = new BlockStateSchema(blockType);
-                Cache[blockType] = schema;
-            }
-            return schema;
-        }
-    }
+        => Cache.GetValue(blockType, static t => new BlockStateSchema(t));
 
     public bool TryGetField(string name, out BlockStateField field) => _byName.TryGetValue(name, out field!);
 

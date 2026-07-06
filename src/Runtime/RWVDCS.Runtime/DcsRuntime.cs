@@ -30,6 +30,9 @@ public sealed class DcsRuntime : IDisposable
 
     public RuntimeBuildReport Report { get; }
 
+    /// <summary>跨 DPU 名字表（热更换代重建绑定用）。</summary>
+    internal Dictionary<string, PointSlotRef> GlobalSlots => _globalSlots;
+
     public DpuRuntime? FindDpu(string name)
     {
         foreach (var d in Dpus)

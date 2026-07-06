@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using RWVDCS.Core.Blocks;
 
 namespace RWVDCS.Runtime;
@@ -11,7 +11,8 @@ namespace RWVDCS.Runtime;
 /// </summary>
 public sealed class FieldAccessor
 {
-    private static readonly ConcurrentDictionary<FieldInfo, FieldAccessor> Cache = new();
+    // ConditionalWeakTable：热更后旧代类型的 FieldInfo 不被缓存钉住，可回收 ALC 能真卸载
+    private static readonly ConditionalWeakTable<FieldInfo, FieldAccessor> Cache = new();
 
     public FieldInfo Field { get; }
     public Func<Function, object?> Read { get; }
@@ -36,5 +37,5 @@ public sealed class FieldAccessor
             fcParam, valParam).Compile();
     }
 
-    public static FieldAccessor For(FieldInfo field) => Cache.GetOrAdd(field, f => new FieldAccessor(f));
+    public static FieldAccessor For(FieldInfo field) => Cache.GetValue(field, static f => new FieldAccessor(f));
 }

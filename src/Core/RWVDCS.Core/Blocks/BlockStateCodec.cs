@@ -12,8 +12,8 @@ namespace RWVDCS.Core.Blocks;
 /// </summary>
 public sealed class BlockStateCodec
 {
-    private static readonly Dictionary<Type, BlockStateCodec> Cache = [];
-    private static readonly Lock CacheLock = new();
+    // ConditionalWeakTable：值（编译委托）可引用键（块类型）而不阻止可回收 ALC 卸载
+    private static readonly ConditionalWeakTable<Type, BlockStateCodec> Cache = new();
 
     public BlockStateSchema Schema { get; }
 
@@ -28,17 +28,7 @@ public sealed class BlockStateCodec
     }
 
     public static BlockStateCodec For(Type blockType)
-    {
-        lock (CacheLock)
-        {
-            if (!Cache.TryGetValue(blockType, out var codec))
-            {
-                codec = new BlockStateCodec(BlockStateSchema.For(blockType));
-                Cache[blockType] = codec;
-            }
-            return codec;
-        }
-    }
+        => Cache.GetValue(blockType, static t => new BlockStateCodec(BlockStateSchema.For(t)));
 
     /// <summary>把块实例状态写入缓冲区（buffer 长度必须 ≥ offset + Schema.ByteLength）。</summary>
     public void Flush(Function block, byte[] buffer, int offset) => _flush(block, buffer, offset);
