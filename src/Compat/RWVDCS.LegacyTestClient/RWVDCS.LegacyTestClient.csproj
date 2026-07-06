@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>10</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>rwvdcs-legacy-client</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="PS.Comm">
+      <HintPath>..\..\..\libs\legacy\PS.Comm.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.Remoting" />
+  </ItemGroup>
+
+</Project>
