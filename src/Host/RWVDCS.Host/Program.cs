@@ -25,8 +25,9 @@ internal static class Program
         }
 
         string mdbPath = args[0];
-        int steps = 0;
+        int steps = 0, runSeconds = -1, soakSteps = 0, monitorInterval = 5;
         string? saveDir = null, loadDir = null, dumpFile = null, arenaDir = null, importLegacy = null;
+        string? historyDir = null, statsCsv = null, blocksSrc = null;
         bool repl = false, firstRun = true;
         var traceBlocks = new List<string>();
 
@@ -35,6 +36,12 @@ internal static class Program
             switch (args[i])
             {
                 case "--steps": steps = int.Parse(args[++i]); break;
+                case "--run": runSeconds = int.Parse(args[++i]); break;
+                case "--soak-steps": soakSteps = int.Parse(args[++i]); break;
+                case "--monitor": monitorInterval = int.Parse(args[++i]); break;
+                case "--stats-csv": statsCsv = args[++i]; break;
+                case "--history": historyDir = args[++i]; break;
+                case "--blocks-src": blocksSrc = args[++i]; break;
                 case "--save": saveDir = args[++i]; break;
                 case "--load": loadDir = args[++i]; break;
                 case "--dump": dumpFile = args[++i]; break;
@@ -115,7 +122,30 @@ internal static class Program
                 Console.WriteLine($"[运行] FirstRun 完成（{sw.ElapsedMilliseconds:N0} ms）");
             }
 
-            // ---- 4. 步进
+            // ---- 4. 运行设施：调度器 / 历史站 / 稳定性监控 / 热更换代器
+            using var scheduler = new ScanScheduler(runtime);
+            using var history = historyDir != null
+                ? new HistoryRecorder(runtime, new HistoryOptions { Directory = historyDir })
+                : null;
+            if (history != null)
+            {
+                scheduler.AfterDpuStep = history.OnDpuStep;
+                Console.WriteLine($"[历史] 记录器已启用 → {history.SessionDirectory}（死区 0.1% 量程 / 强制间隔 300 周期）");
+            }
+            using var monitor = new StabilityMonitor(scheduler, history, statsCsv);
+            var swapper = new BlockHotSwapper(runtime, model);
+            blocksSrc ??= Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Blocks", "RWVDCS.Blocks", "RW");
+            blocksSrc = Path.GetFullPath(blocksSrc);
+
+            // Ctrl+C：优雅暂停而非硬杀
+            bool cancelled = false;
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                cancelled = true;
+            };
+
+            // ---- 5. 步进（对账路径，保持原语义：直接串行步进，不经调度器）
             if (steps > 0)
             {
                 if (traceBlocks.Count > 0)
@@ -137,11 +167,31 @@ internal static class Program
                 }
             }
 
-            // ---- 5. 保存/导出
+            // ---- 6. 全速浸泡（分块步进 + 周期统计 + 采样监控）
+            if (soakSteps > 0)
+                RunSoak(scheduler, monitor, soakSteps, ref cancelled);
+
+            // ---- 7. 连续运行（实时节拍）
+            if (runSeconds >= 0)
+            {
+                Console.WriteLine($"[运行] 连续运行{(runSeconds == 0 ? "（Ctrl+C 停止）" : $" {runSeconds} 秒")}，" +
+                                  $"节拍 = 各 DPU Cycle（{runtime.Dpus[0].Cycle * 1000:F0} ms），监控每 {monitorInterval}s");
+                monitor.Start(monitorInterval);
+                scheduler.Start();
+                var runClock = Stopwatch.StartNew();
+                while (!cancelled && (runSeconds == 0 || runClock.Elapsed.TotalSeconds < runSeconds))
+                    Thread.Sleep(200);
+                scheduler.Pause();
+                Console.WriteLine($"[运行] 已暂停（实际运行 {runClock.Elapsed.TotalSeconds:F0} s）");
+                monitor.Sample();
+                monitor.PrintDpuStats();
+            }
+
+            // ---- 8. 保存/导出
             if (saveDir != null)
             {
                 sw.Restart();
-                runtime.SaveSnapshot(saveDir);
+                scheduler.RunAtCycleBoundary(() => runtime.SaveSnapshot(saveDir));
                 sw.Stop();
                 long bytes = Directory.EnumerateFiles(saveDir).Sum(f => new FileInfo(f).Length);
                 Console.WriteLine($"[工况] 已保存 {saveDir}（{bytes / 1024.0 / 1024.0:F1} MB，{sw.ElapsedMilliseconds:N0} ms）");
@@ -155,12 +205,34 @@ internal static class Program
                 Console.WriteLine($"[导出] {n:N0} 点 → {dumpFile}（{sw.ElapsedMilliseconds:N0} ms）");
             }
 
-            // ---- 6. 交互
+            // ---- 9. 交互
             if (repl)
-                RunRepl(runtime);
+                RunRepl(runtime, scheduler, monitor, swapper, history, blocksSrc);
+
+            scheduler.Stop();
         }
 
         return 0;
+    }
+
+    /// <summary>全速浸泡：不设节拍分块步进，块间采样稳定性指标（内存增长/GC 抖动检测）。</summary>
+    private static void RunSoak(ScanScheduler scheduler, StabilityMonitor monitor, int totalSteps, ref bool cancelled)
+    {
+        const int chunk = 500;
+        Console.WriteLine($"[浸泡] 全速步进 {totalSteps:N0} 周期（每 {chunk} 周期采样一次，Ctrl+C 提前结束）");
+        var sw = Stopwatch.StartNew();
+        int done = 0;
+        while (done < totalSteps && !cancelled)
+        {
+            int n = Math.Min(chunk, totalSteps - done);
+            scheduler.StepOnce(n);
+            done += n;
+            if (done % (chunk * 10) == 0 || done >= totalSteps)
+                monitor.Sample();
+        }
+        sw.Stop();
+        Console.WriteLine($"[浸泡] 完成 {done:N0} 周期，共 {sw.Elapsed.TotalSeconds:F1} s（{sw.Elapsed.TotalMilliseconds / Math.Max(done, 1):F2} ms/周期）");
+        monitor.PrintDpuStats();
     }
 
     // =================================================================
@@ -230,7 +302,13 @@ internal static class Program
     // =================================================================
     // 交互模式
     // =================================================================
-    private static void RunRepl(DcsRuntime runtime)
+    private static void RunRepl(
+        DcsRuntime runtime,
+        ScanScheduler scheduler,
+        StabilityMonitor monitor,
+        BlockHotSwapper swapper,
+        HistoryRecorder? history,
+        string blocksSrc)
     {
         Console.WriteLine();
         Console.WriteLine("交互模式（help 查看命令，quit 退出）");
@@ -249,13 +327,20 @@ internal static class Program
                 switch (parts[0].ToLowerInvariant())
                 {
                     case "quit" or "exit" or "q":
+                        scheduler.Pause();
                         return;
 
                     case "help" or "h":
                         Console.WriteLine("""
                             r|read <点名>            读点值
                             w|write <点名> <值>      写点值
-                            s|step [n]               步进 n 个周期（默认 1）
+                            s|step [n]               单步 n 个周期（默认 1；需处于暂停态）
+                            run                      开始连续运行（按周期节拍）
+                            pause                    暂停连续运行（周期边界）
+                            stats                    周期耗时统计（每 DPU）+ 进程稳定性采样
+                            hotload <FC名|.cs 文件>  热更换代功能块（Roslyn 编译 → 周期边界原子替换，状态保留）
+                            hist <点名> [n]          查询历史站最近 n 条记录（默认 10）
+                            cycle <秒>               修改全部 DPU 扫描周期
                             firstrun                 执行 FirstRun
                             save <目录>              保存工况
                             load <目录>              加载工况
@@ -266,6 +351,61 @@ internal static class Program
                             quit                     退出
                             """);
                         break;
+
+                    case "run":
+                        scheduler.Start();
+                        Console.WriteLine($"连续运行中（节拍 {runtime.Dpus[0].Cycle * 1000:F0} ms；pause 暂停）");
+                        break;
+
+                    case "pause":
+                        scheduler.Pause();
+                        Console.WriteLine($"已暂停（周期边界）：" + string.Join(" ", runtime.Dpus.Select(d => $"{d.Name}=c{d.CycleCount}")));
+                        break;
+
+                    case "stats":
+                        monitor.PrintDpuStats();
+                        monitor.Sample();
+                        break;
+
+                    case "hotload" when parts.Length >= 2:
+                        HotLoad.Execute(swapper, scheduler, blocksSrc, parts[1..]);
+                        break;
+
+                    case "hist" when parts.Length >= 2:
+                    {
+                        if (history == null)
+                        {
+                            Console.WriteLine("历史站未启用（启动时加 --history <目录>）");
+                            break;
+                        }
+                        history.Flush();
+                        int max = parts.Length >= 3 ? int.Parse(parts[2]) : 10;
+                        string pointName = parts[1];
+                        DpuRuntime? owner = runtime.Dpus.FirstOrDefault(d => d.LocalSlots.ContainsKey(pointName));
+                        if (owner == null)
+                        {
+                            Console.WriteLine($"点不存在：{pointName}");
+                            break;
+                        }
+                        string file = Path.Combine(history.SessionDirectory, string.Join("_", owner.Name.Split(Path.GetInvalidFileNameChars())) + ".rwhist");
+                        var samples = HistoryRecorder.Query(file, pointName).ToList();
+                        foreach (var s in samples.TakeLast(max))
+                            Console.WriteLine($"  c{s.Cycle,-8} {DateTimeOffset.FromUnixTimeMilliseconds(s.UnixMs).ToLocalTime():HH:mm:ss.fff}  {s.Value}");
+                        Console.WriteLine($"共 {samples.Count} 条记录（显示最近 {Math.Min(max, samples.Count)} 条）");
+                        break;
+                    }
+
+                    case "cycle" when parts.Length >= 2:
+                    {
+                        float sec = float.Parse(parts[1], CultureInfo.InvariantCulture);
+                        scheduler.RunAtCycleBoundary(() =>
+                        {
+                            foreach (var dpu in runtime.Dpus)
+                                dpu.Cycle = sec;
+                        });
+                        Console.WriteLine($"扫描周期 → {runtime.Dpus[0].Cycle * 1000:F0} ms");
+                        break;
+                    }
 
                     case "r" or "read" when parts.Length >= 2:
                     {
@@ -300,11 +440,17 @@ internal static class Program
 
                     case "s" or "step":
                     {
+                        if (scheduler.State == ScanState.Running)
+                        {
+                            Console.WriteLine("连续运行中，请先 pause 再单步。");
+                            break;
+                        }
                         int n = parts.Length >= 2 ? int.Parse(parts[1]) : 1;
                         var sw = Stopwatch.StartNew();
-                        runtime.Step(n);
+                        scheduler.StepOnce(n);
                         sw.Stop();
-                        Console.WriteLine($"步进 {n} 周期，{sw.Elapsed.TotalMilliseconds:F2} ms");
+                        Console.WriteLine($"步进 {n} 周期，{sw.Elapsed.TotalMilliseconds:F2} ms → " +
+                                          string.Join(" ", runtime.Dpus.Select(d => $"{d.Name}=c{d.CycleCount}")));
                         break;
                     }
 
@@ -314,12 +460,12 @@ internal static class Program
                         break;
 
                     case "save" when parts.Length >= 2:
-                        runtime.SaveSnapshot(parts[1]);
+                        scheduler.RunAtCycleBoundary(() => runtime.SaveSnapshot(parts[1]));
                         Console.WriteLine($"工况已保存: {parts[1]}");
                         break;
 
                     case "load" when parts.Length >= 2:
-                        runtime.LoadSnapshot(parts[1]);
+                        scheduler.RunAtCycleBoundary(() => runtime.LoadSnapshot(parts[1]));
                         Console.WriteLine($"工况已加载: {parts[1]}");
                         break;
 
@@ -403,7 +549,13 @@ internal static class Program
             用法: rwvdcs <工程.mdb> [选项]
 
             选项:
-              --steps N               FirstRun 后步进 N 个周期
+              --steps N               FirstRun 后步进 N 个周期（对账路径）
+              --run N                 连续运行 N 秒（0 = 直到 Ctrl+C；按各 DPU 周期节拍）
+              --soak-steps N          全速浸泡 N 个周期（分块步进 + 稳定性采样）
+              --monitor N             连续运行时监控采样间隔秒数（默认 5）
+              --stats-csv <文件>      稳定性指标落 CSV（长跑趋势分析）
+              --history <目录>        启用内嵌历史站（死区变化存储）
+              --blocks-src <目录>     热更源码目录（hotload 按 FC 名找文件；默认仓库内 Blocks/RW）
               --save <目录>           运行结束后保存工况
               --load <目录>           加载工况（跳过 FirstRun）
               --import-legacy <文件>  导入老 .wrk 迁移桥接文件（LegacyRunner --export-state 产物；跳过 FirstRun）
