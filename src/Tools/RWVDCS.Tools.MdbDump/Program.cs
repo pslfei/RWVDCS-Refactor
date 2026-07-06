@@ -4,6 +4,7 @@
 //   MdbDump <mdb路径> schema <表名>              列出表结构（列名/类型）
 //   MdbDump <mdb路径> sample <表名> [行数]        采样若干行
 //   MdbDump <mdb路径> sql "<select语句>" [行数]   任意查询
+//   MdbDump <mdb路径> exec "<非查询语句>"         执行 INSERT/UPDATE/DELETE（测试库制备用）
 //   MdbDump <mdb路径> profile                    工程画像（控制器/点/块分布）
 using System.Data;
 using System.Data.OleDb;
@@ -11,7 +12,7 @@ using System.Text;
 
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("用法: MdbDump <mdb路径> tables|schema|sample|sql|profile [参数]");
+    Console.Error.WriteLine("用法: MdbDump <mdb路径> tables|schema|sample|sql|exec|profile [参数]");
     return 1;
 }
 
@@ -19,7 +20,8 @@ Console.OutputEncoding = Encoding.UTF8;
 string mdbPath = args[0];
 string verb = args[1].ToLowerInvariant();
 
-string connStr = $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={mdbPath};Persist Security Info=False;Mode=Read;";
+string mode = verb == "exec" ? "Share Deny None" : "Read";
+string connStr = $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={mdbPath};Persist Security Info=False;Mode={mode};";
 using var conn = new OleDbConnection(connStr);
 conn.Open();
 
@@ -65,6 +67,13 @@ switch (verb)
         string sql = args[2];
         int n = args.Length > 3 ? int.Parse(args[3]) : 50;
         DumpQuery(conn, sql, n);
+        break;
+    }
+    case "exec":
+    {
+        using var cmd = new OleDbCommand(args[2], conn);
+        int affected = cmd.ExecuteNonQuery();
+        Console.WriteLine($"OK，影响 {affected} 行");
         break;
     }
     case "profile":
