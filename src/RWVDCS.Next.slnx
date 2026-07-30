@@ -2,6 +2,14 @@
   <Folder Name="/Blocks/">
     <Project Path="Blocks/RWVDCS.Blocks/RWVDCS.Blocks.csproj" />
   </Folder>
+  <Folder Name="/Api/">
+    <Project Path="Api/RWVDCS.Api/RWVDCS.Api.csproj" />
+  </Folder>
+  <Folder Name="/Compat/">
+    <Project Path="Compat/RWVDCS.CompatProtocol/RWVDCS.CompatProtocol.csproj" />
+    <Project Path="Compat/RWVDCS.LegacyTestClient/RWVDCS.LegacyTestClient.csproj" />
+    <Project Path="Compat/RWVDCS.RemotingAdapter/RWVDCS.RemotingAdapter.csproj" />
+  </Folder>
   <Folder Name="/Core/">
     <Project Path="Core/RWVDCS.Core/RWVDCS.Core.csproj" />
     <Project Path="Core/RWVDCS.Hosting/RWVDCS.Hosting.csproj" />

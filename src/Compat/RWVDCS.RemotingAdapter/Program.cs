@@ -12,8 +12,8 @@ namespace RWVDCS.RemotingAdapter
     /// <summary>
     /// Remoting 兼容适配器入口。
     /// 对老客户端（HMI/IOMAP/Alarm/教练员站）呈现与老 Simulator 完全一致的
-    /// tcp|ipc://host:port/Communication 端点；内部转发到新系统 REST API。
-    /// 用法：rwvdcs-remoting-adapter [--port 8000] [--api http://localhost:8080] [--poll 200]
+    /// tcp|ipc://host:port/Communication 端点；实时订阅/读写默认走 Host 本机二进制管道，
+    /// 低频管理接口继续使用 REST。可用 --transport rest 显式切回旧转发路径。
     /// </summary>
     internal static class Program
     {
@@ -21,9 +21,14 @@ namespace RWVDCS.RemotingAdapter
         {
             Console.OutputEncoding = Encoding.UTF8;
 
-            int port = 8000;                              // 老 Simulator 默认端口
-            string api = "http://localhost:8080";
+            int port = 8002;                              // 老 Simulator 默认端口
+            string api = "http://localhost:8090";
             int pollMs = 200;                             // 老系统默认扫描周期同款
+            int timeoutSeconds = 60;
+            int requestTimeoutMs = 3000;
+            string transport = "pipe";
+            string requestPipe = RWVDCS.CompatProtocol.CompatProtocolConstants.DefaultRequestPipe;
+            string eventPipe = RWVDCS.CompatProtocol.CompatProtocolConstants.DefaultEventPipe;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -32,24 +37,53 @@ namespace RWVDCS.RemotingAdapter
                     case "--port": port = int.Parse(args[++i]); break;
                     case "--api": api = args[++i]; break;
                     case "--poll": pollMs = int.Parse(args[++i]); break;
+                    case "--timeout": timeoutSeconds = int.Parse(args[++i]); break;
+                    case "--request-timeout-ms": requestTimeoutMs = int.Parse(args[++i]); break;
+                    case "--transport": transport = args[++i].Trim().ToLowerInvariant(); break;
+                    case "--request-pipe": requestPipe = args[++i]; break;
+                    case "--event-pipe": eventPipe = args[++i]; break;
                     case "-h":
                     case "--help":
-                        Console.WriteLine("用法: rwvdcs-remoting-adapter [--port 8000] [--api http://localhost:8080] [--poll 200]");
+                        Console.WriteLine("用法: rwvdcs-remoting-adapter [--port 8002] [--transport pipe|rest] [--request-pipe NAME] [--event-pipe NAME] [--request-timeout-ms 3000] [--api http://localhost:8090] [--poll 200] [--timeout 60]");
                         return 0;
                 }
             }
 
             Action<string> log = msg => Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} [适配器] {msg}");
+            log($"Windows 账户：{Environment.UserDomainName}\\{Environment.UserName}");
 
-            var rest = new RestBridge(api);
+            var rest = new RestBridge(api, TimeSpan.FromSeconds(Math.Max(5, timeoutSeconds)));
             string project, run;
             if (rest.TryGetStatus(out project, out run))
                 log($"已连上新系统 {api}（工程: {project ?? "未装载"}，运行态: {run}）");
             else
                 log($"警告：暂时连不上新系统 {api}，将在客户端调用时重试");
 
-            var registry = new SubscriptionRegistry(rest, pollMs);
+            CompatPipeClient pipe = null;
+            if (transport == "pipe")
+            {
+                pipe = new CompatPipeClient(requestPipe, eventPipe, requestTimeoutMs, log);
+                if (pipe.TryConnect())
+                    log("实时订阅/读写使用本机二进制管道（无 HTTP/JSON）");
+                else
+                    log("警告：Host 二进制管道尚未就绪，客户端调用时将继续重试；不会静默回退 REST。"
+                        + "请确认 Host 已启动新版本兼容网关，且 Host/Edge 使用同一 Windows 账户");
+            }
+            else if (transport == "rest")
+            {
+                log("实时订阅/读写使用 REST 应急兼容模式");
+            }
+            else
+            {
+                log($"不支持的 transport：{transport}（应为 pipe 或 rest）");
+                rest.Dispose();
+                return 2;
+            }
+
+            var registry = new SubscriptionRegistry(rest, pollMs, pipe);
             registry.Log += log;
+            // 先注册 Registry 的重连事件，再启动事件线程，避免 Host 快速重连时丢失恢复通知。
+            pipe?.StartEvents();
 
             // 通道注册（对齐老 ServerObj：TCP + IPC，BinaryFormatter Full 信任）
             var serverProvider = new BinaryServerFormatterSinkProvider { TypeFilterLevel = TypeFilterLevel.Full };

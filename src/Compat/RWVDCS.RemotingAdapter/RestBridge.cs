@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace RWVDCS.RemotingAdapter
 {
@@ -13,26 +14,56 @@ namespace RWVDCS.RemotingAdapter
     internal sealed class RestBridge : IDisposable
     {
         private readonly HttpClient _http;
+        private readonly TimeSpan _timeout;
 
-        public RestBridge(string baseUrl)
+        public RestBridge(string baseUrl, TimeSpan? timeout = null)
         {
+            _timeout = timeout ?? TimeSpan.FromSeconds(60);
             _http = new HttpClient
             {
                 BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/api/"),
-                Timeout = TimeSpan.FromSeconds(15),
+                Timeout = _timeout,
             };
         }
 
         public string BaseUrl => _http.BaseAddress.ToString();
 
         public JsonDocument Get(string path)
-            => Parse(_http.GetAsync(path).GetAwaiter().GetResult());
+            => Send("GET", path, null);
 
         public JsonDocument Post(string path, object body = null)
-            => Parse(_http.PostAsync(path, Content(body)).GetAwaiter().GetResult());
+            => Send("POST", path, body);
 
         public JsonDocument Put(string path, object body)
-            => Parse(_http.PutAsync(path, Content(body)).GetAwaiter().GetResult());
+            => Send("PUT", path, body);
+
+        private JsonDocument Send(string method, string path, object body)
+        {
+            try
+            {
+                HttpResponseMessage response;
+                switch (method)
+                {
+                    case "GET":
+                        response = _http.GetAsync(path).GetAwaiter().GetResult();
+                        break;
+                    case "POST":
+                        response = _http.PostAsync(path, Content(body)).GetAwaiter().GetResult();
+                        break;
+                    case "PUT":
+                        response = _http.PutAsync(path, Content(body)).GetAwaiter().GetResult();
+                        break;
+                    default:
+                        throw new InvalidOperationException("不支持的 HTTP 方法：" + method);
+                }
+                return Parse(response);
+            }
+            catch (TaskCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"{method} {_http.BaseAddress}{path} 超时（{_timeout.TotalSeconds:F0}s）。请检查 Web Host 是否可达、是否已装载工程，或调大适配器 --timeout。", ex);
+            }
+        }
 
         /// <summary>探活：新系统是否可达且已装载工程。</summary>
         public bool TryGetStatus(out string project, out string runState)

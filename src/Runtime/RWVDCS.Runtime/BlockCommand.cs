@@ -231,7 +231,16 @@ public sealed class BlockCommand : ICommand
                 val = LegacySemantics.ReversePointValue(val);
 
             if (b.Target is { IsRealPoint: true } target)
+            {
+                if (_dpu.Iomap != null && _dpu.Iomap.IsOwned(target))
+                {
+                    if (_dpu.Iomap.TryGetOwnedValue(target, out var ownedValue) && ownedValue != null)
+                        target.WriteBoxedBuffer(ownedValue);
+                    continue;
+                }
+
                 target.WriteBoxedBuffer(val);
+            }
         }
     }
 

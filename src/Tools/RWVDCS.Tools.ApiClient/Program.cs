@@ -76,7 +76,7 @@ internal static class Program
 
             case "dpus":
             {
-                var doc = await Get("dpus");
+                var doc = await Get("runtime/dpus");
                 Console.WriteLine($"{"DPU",-12} {"状态",-10} {"周期s",8} {"块数",8} {"当前ms",9} {"均值ms",9} {"P99ms",9} {"超限",6} {"扫描次数",10}");
                 foreach (var d in doc.RootElement.EnumerateArray())
                 {

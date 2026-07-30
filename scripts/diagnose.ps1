@@ -30,7 +30,7 @@ try {
     if ($s.pendingDownload) { Write-Host ("待提交下装计划: {0}" -f $s.pendingDownload.planId) -ForegroundColor Yellow }
 
     Section "DPU 周期统计（P99 最高 5 个）"
-    $dpus = Invoke-RestMethod "$Url/api/dpus" -TimeoutSec 5 -NoProxy
+    $dpus = Invoke-RestMethod "$Url/api/runtime/dpus" -TimeoutSec 5 -NoProxy
     $dpus | Where-Object { $_.stats } |
         Sort-Object { $_.stats.p99Ms } -Descending | Select-Object -First 5 |
         ForEach-Object { Write-Host ("{0,-10} 周期{1}s 当前{2:F2}ms P99 {3:F2}ms 超限{4} 扫描{5}" -f `

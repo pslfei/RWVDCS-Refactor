@@ -94,16 +94,16 @@ namespace RWVDCS.RemotingAdapter
             => _registry.Read(new[] { Handle })[0];
 
         public bool SetValue(int ClientHandle, long Handle, object Value)
-            => _registry.Write(new[] { Handle }, new[] { Value })[0];
+            => _registry.Write(ClientHandle, new[] { Handle }, new[] { Value }, null)[0];
 
         public bool SetValue(int ClientHandle, long Handle, object Value, string UserInfo)
-            => SetValue(ClientHandle, Handle, Value);
+            => _registry.Write(ClientHandle, new[] { Handle }, new[] { Value }, UserInfo)[0];
 
         public bool[] SetValue(int ClientHandle, long[] Handles, object[] Values)
-            => _registry.Write(Handles, Values);
+            => _registry.Write(ClientHandle, Handles, Values, null);
 
         public bool[] SetValue(int ClientHandle, long[] Handles, object[] Values, string UserInfo)
-            => _registry.Write(Handles, Values);
+            => _registry.Write(ClientHandle, Handles, Values, UserInfo);
 
         public OPCParams[] GetChangedData(int ClientHandle)
         {

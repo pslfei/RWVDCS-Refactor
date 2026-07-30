@@ -89,6 +89,9 @@ public sealed class RuntimeHost : IDisposable
 
     public bool ProjectLoaded => Runtime != null;
 
+    /// <summary>Runtime 即将被替换；实时兼容层据此停止向旧 Arena 发起读写。</summary>
+    public event Action? RuntimeChanging;
+
     public event Action? RuntimeSwapped;
 
     public RuntimeHost(RuntimeHostOptions options)
@@ -146,6 +149,8 @@ public sealed class RuntimeHost : IDisposable
     private void SwapRuntime(DcsRuntime newRuntime, EngineeringModel buildModel, EngineeringModel pristine,
         string mdbPath, string fingerprint, ScanState restoreState)
     {
+        RuntimeChanging?.Invoke();
+
         // 停旧
         Scheduler?.Stop();
         History?.Dispose();

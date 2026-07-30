@@ -24,11 +24,16 @@ public sealed class DcsRuntime : IDisposable
         Dpus = dpus;
         _globalSlots = globalSlots;
         Report = report;
+        Iomap = new IomapOwnership();
+        foreach (var dpu in dpus)
+            dpu.Iomap = Iomap;
     }
 
     public IReadOnlyList<DpuRuntime> Dpus { get; }
 
     public RuntimeBuildReport Report { get; }
+
+    public IomapOwnership Iomap { get; }
 
     /// <summary>跨 DPU 名字表（热更换代重建绑定用）。</summary>
     internal Dictionary<string, PointSlotRef> GlobalSlots => _globalSlots;

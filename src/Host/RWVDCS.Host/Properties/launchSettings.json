@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "RWVDCS Web 8090": {
+      "commandName": "Project",
+      "commandLineArgs": "\"D:\\项目\\睿渥\\VDCS(RuiWo)--260615.mdb\" --web 8090 --start",
+      "workingDirectory": "D:\\项目\\睿渥\\RWVDCS重构",
+      "launchBrowser": true,
+      "launchUrl": "http://localhost:8090"
+    }
+  }
+}

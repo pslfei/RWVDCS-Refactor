@@ -13,6 +13,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\RWVDCS.CompatProtocol\RWVDCS.CompatProtocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="PS.Comm">
       <HintPath>..\..\..\libs\legacy\PS.Comm.dll</HintPath>
     </Reference>

@@ -32,6 +32,8 @@ public sealed class DpuRuntime : IDpu, IDisposable
     /// <summary>命令表（Cld_FCBlock 装载序 = 老系统执行序）。</summary>
     public List<BlockCommand> Commands { get; } = [];
 
+    internal IomapOwnership? Iomap { get; set; }
+
     /// <summary>DB 点槽数量（SID [0, N) 为工程库点；其后是中间点与块槽）。历史站按此圈定记录范围。</summary>
     public int DbPointSlotCount { get; internal set; }
 
@@ -67,6 +69,9 @@ public sealed class DpuRuntime : IDpu, IDisposable
 
     public uint CycleCount { get; set; }
 
+    /// <summary>最近一次完整扫描结束时间；用于兼容旧 /api/diagnostics 心跳字段。</summary>
+    public DateTime LastCompletedCycleUtc { get; private set; }
+
     /// <summary>首次运行：顺序 FirstRun 所有命令（块 FirstRun 异常向上传播，与老系统一致）。</summary>
     public void FirstRun()
     {
@@ -82,6 +87,7 @@ public sealed class DpuRuntime : IDpu, IDisposable
         for (int i = 0; i < commands.Count; i++)
             commands[i].Execute();
         CycleCount++;
+        LastCompletedCycleUtc = DateTime.UtcNow;
     }
 
     public BlockCommand? FindCommand(string blockName)

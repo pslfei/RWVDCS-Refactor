@@ -58,6 +58,78 @@ public static class PointFieldAccess
         return result;
     }
 
+    /// <summary>按名直接读取单个子字段，避免高频订阅读取时构造完整字段列表。</summary>
+    public static bool TryRead(PointSlotRef slot, string fieldName, out object? value, out Type? fieldType)
+    {
+        value = null;
+        fieldType = null;
+        if (!slot.IsRealPoint || !Layouts.TryGetValue(slot.Kind, out var fields))
+            return false;
+
+        foreach (var (name, offset, type) in fields)
+        {
+            if (!string.Equals(name, fieldName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            fieldType = type;
+            Type t = type.IsEnum ? Enum.GetUnderlyingType(type) : type;
+            value = Type.GetTypeCode(t) switch
+            {
+                TypeCode.Single => slot.Arena.ReadField<float>(slot.Sid, offset),
+                TypeCode.Byte => slot.Arena.ReadField<byte>(slot.Sid, offset),
+                TypeCode.UInt16 => slot.Arena.ReadField<ushort>(slot.Sid, offset),
+                TypeCode.UInt32 => slot.Arena.ReadField<uint>(slot.Sid, offset),
+                TypeCode.Int32 => slot.Arena.ReadField<int>(slot.Sid, offset),
+                _ => null,
+            };
+            return value != null;
+        }
+        return false;
+    }
+
+    /// <summary>按名直接写入类型化子字段；供兼容二进制通道使用，避免值转文本。</summary>
+    public static bool WriteObject(PointSlotRef slot, string fieldName, object? value)
+    {
+        if (!slot.IsRealPoint || value == null || !Layouts.TryGetValue(slot.Kind, out var fields))
+            return false;
+
+        foreach (var (name, offset, type) in fields)
+        {
+            if (!string.Equals(name, fieldName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            Type t = type.IsEnum ? Enum.GetUnderlyingType(type) : type;
+            try
+            {
+                switch (Type.GetTypeCode(t))
+                {
+                    case TypeCode.Single:
+                        slot.Arena.WriteField(slot.Sid, offset, Convert.ToSingle(value, CultureInfo.InvariantCulture));
+                        return true;
+                    case TypeCode.Byte:
+                        byte b = value is bool flag ? (byte)(flag ? 1 : 0)
+                            : Convert.ToByte(value, CultureInfo.InvariantCulture);
+                        slot.Arena.WriteField(slot.Sid, offset, b);
+                        return true;
+                    case TypeCode.UInt16:
+                        slot.Arena.WriteField(slot.Sid, offset, Convert.ToUInt16(value, CultureInfo.InvariantCulture));
+                        return true;
+                    case TypeCode.UInt32:
+                        slot.Arena.WriteField(slot.Sid, offset, Convert.ToUInt32(value, CultureInfo.InvariantCulture));
+                        return true;
+                    case TypeCode.Int32:
+                        slot.Arena.WriteField(slot.Sid, offset, Convert.ToInt32(value, CultureInfo.InvariantCulture));
+                        return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
     /// <summary>按名写单个子字段（文本值解析；未知字段/解析失败返回 false）。</summary>
     public static bool Write(PointSlotRef slot, string fieldName, string value)
     {

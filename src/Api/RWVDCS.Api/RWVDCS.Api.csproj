@@ -9,6 +9,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Compat\RWVDCS.CompatProtocol\RWVDCS.CompatProtocol.csproj" />
     <ProjectReference Include="..\..\Core\RWVDCS.Core\RWVDCS.Core.csproj" />
     <ProjectReference Include="..\..\Core\RWVDCS.Hosting\RWVDCS.Hosting.csproj" />
     <ProjectReference Include="..\..\Engineering\RWVDCS.Engineering\RWVDCS.Engineering.csproj" />
@@ -17,6 +18,10 @@
 
   <ItemGroup>
     <Content Include="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
 
 </Project>

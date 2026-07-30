@@ -207,7 +207,7 @@ views.dashboard = (main) => {
         <div class="card"><div class="k">托管堆 / 工作集</div><div class="v">${m.heapMb.toFixed(0)} / ${m.workingSetMb.toFixed(0)} MB<br><small>GC ${m.gen0}/${m.gen1}/${m.gen2} ｜ 暂停 ${m.gcPausePct.toFixed(2)}%</small></div></div>
         <div class="card"><div class="k">线程 / 历史站</div><div class="v">${m.threads}<small> 线程</small> ｜ ${m.historyMb.toFixed(1)}<small> MB</small></div></div>`;
 
-      const dpus = await api("/dpus");
+      const dpus = await api("/runtime/dpus");
       const tb = $("#dpu-table tbody");
       tb.innerHTML = dpus.map(d => `<tr>
         <td class="mono">${esc(d.name)}</td>
@@ -261,7 +261,7 @@ views.browse = (main, query) => {
 
 async function loadDpuOptions(sel) {
   try {
-    const dpus = await api("/dpus");
+    const dpus = await api("/runtime/dpus");
     sel.innerHTML = `<option value="">全部 DPU</option>` +
       dpus.map(d => `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join("");
   } catch { }

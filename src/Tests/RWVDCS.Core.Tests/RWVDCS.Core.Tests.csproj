@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Compat\RWVDCS.CompatProtocol\RWVDCS.CompatProtocol.csproj" />
     <ProjectReference Include="..\..\Core\RWVDCS.Core\RWVDCS.Core.csproj" />
     <ProjectReference Include="..\..\Core\RWVDCS.Hosting\RWVDCS.Hosting.csproj" />
   </ItemGroup>

@@ -1,8 +1,14 @@
 # 启动 Remoting 兼容适配器（老 HMI/IOMAP/Alarm 客户端过渡接入）
-# 用法: .\start-remoting-adapter.ps1 [-Port 8000] [-Api http://localhost:8090] [-PollMs 200] [-Release]
+# 默认使用本机固定二进制管道承载订阅/读写；REST 仅保留管理面和显式应急回退。
+# 用法: .\start-remoting-adapter.ps1 [-Port 8000] [-Api http://localhost:8090] [-Transport pipe|rest] [-Release]
 param(
     [int]$Port = 8000,
     [string]$Api = "http://localhost:8090",
+    [ValidateSet("pipe", "rest")]
+    [string]$Transport = "pipe",
+    [string]$RequestPipe = "RWVDCS.default.Realtime.Request.v1",
+    [string]$EventPipe = "RWVDCS.default.Realtime.Events.v1",
+    [int]$RequestTimeoutMs = 3000,
     [int]$PollMs = 200,
     [switch]$Release
 )
@@ -27,4 +33,11 @@ try {
 }
 
 Write-Host "老客户端连接地址: tcp://<本机>:$Port/Communication" -ForegroundColor Cyan
-& $exe --port $Port --api $Api --poll $PollMs
+if ($Transport -eq "pipe") {
+    Write-Host "实时通道: 本机二进制管道 ($RequestPipe / $EventPipe)" -ForegroundColor Cyan
+} else {
+    Write-Host "实时通道: REST 应急模式（存在 JSON/轮询开销）" -ForegroundColor Yellow
+}
+& $exe --port $Port --api $Api --transport $Transport `
+    --request-pipe $RequestPipe --event-pipe $EventPipe `
+    --request-timeout-ms $RequestTimeoutMs --poll $PollMs

@@ -1,14 +1,19 @@
 using System.Globalization;
+using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RWVDCS.Core.Blocks;
 using RWVDCS.Core.Types;
+using RWVDCS.Engineering;
 using RWVDCS.Runtime;
 
 namespace RWVDCS.Api;
@@ -19,21 +24,45 @@ namespace RWVDCS.Api;
 /// </summary>
 public sealed class ApiServer : IAsyncDisposable
 {
+    private const int LegacyMaxRequestBodyBytes = 4 * 1024 * 1024;
+    private const int LegacyMaxBatchItems = 10_000;
+    private const int LegacyMaxStringValueBytes = 64 * 1024;
+    private static readonly SemaphoreSlim LegacyWriteAdmission = new(4, 4);
+
     private readonly WebApplication _app;
     private readonly RuntimeHost _host;
+    private readonly RealtimeCompatGateway _compatGateway;
 
     public string Url { get; }
 
     public ApiServer(RuntimeHost host, int port)
     {
         _host = host;
+        _compatGateway = new RealtimeCompatGateway(host);
         Url = $"http://localhost:{port}";
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls($"http://*:{port}");
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen();
+        builder.Services.ConfigureHttpJsonOptions(options =>
+            options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals);
+        builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
         _app = builder.Build();
+
+        _app.UseCors();
+        UseLegacyRequestLimits(_app);
+
+        _app.UseSwagger();
+        _app.UseSwaggerUI(options =>
+        {
+            options.DocumentTitle = "RWVDCS API";
+            options.SwaggerEndpoint("/swagger/v1/swagger.json", "RWVDCS API v1");
+            options.RoutePrefix = "swagger";
+        });
 
         // 静态界面（wwwroot 随 Api 项目发布）
         string wwwroot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
@@ -47,10 +76,15 @@ public sealed class ApiServer : IAsyncDisposable
         MapEndpoints(_app);
     }
 
-    public Task StartAsync() => _app.StartAsync();
+    public Task StartAsync()
+    {
+        _compatGateway.Start();
+        return _app.StartAsync();
+    }
 
     public async ValueTask DisposeAsync()
     {
+        await _compatGateway.DisposeAsync();
         await _app.StopAsync(TimeSpan.FromSeconds(2));
         await _app.DisposeAsync();
     }
@@ -114,7 +148,8 @@ public sealed class ApiServer : IAsyncDisposable
             });
         });
 
-        api.MapGet("/dpus", () =>
+        // 管理端丰富 DPU 视图。/api/dpus 保留给 EmbeddedHttpApi 旧协议。
+        api.MapGet("/runtime/dpus", () =>
         {
             var rt = RequireRuntime();
             var stats = _host.Scheduler?.Stats;
@@ -269,6 +304,561 @@ public sealed class ApiServer : IAsyncDisposable
                 .Select(kv => new { fc = kv.Key, count = kv.Value }));
         });
 
+        // ---------------- 原版 EmbeddedHttpApi 兼容接口 ----------------
+        api.MapGet("/diagnostics", () =>
+        {
+            var rt = _host.Runtime;
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            var stats = _host.Scheduler?.Stats;
+            var dpus = rt == null
+                ? Array.Empty<object>()
+                : rt.Dpus.Select((d, i) => (object)new
+                {
+                    name = d.Name,
+                    cycleCount = d.CycleCount,
+                    currentCycleMilliseconds = stats != null && i < stats.Count
+                        ? (long)Math.Round(stats[i].CurrentMs, MidpointRounding.AwayFromZero)
+                        : 0L,
+                    lastCompletedCycleUtc = d.LastCompletedCycleUtc,
+                    iomapPending = 0,
+                }).ToArray();
+            return Results.Json(new
+            {
+                pid = process.Id,
+                processStartTime = process.StartTime,
+                uptimeSeconds = (DateTime.Now - process.StartTime).TotalSeconds,
+                state = _host.RunState.ToString(),
+                modelGeneration = (long)_compatGateway.Values.RuntimeGeneration,
+                privateBytes = process.PrivateMemorySize64,
+                virtualBytes = process.VirtualMemorySize64,
+                workingSetBytes = process.WorkingSet64,
+                gcHeapBytes = GC.GetTotalMemory(false),
+                gen0Collections = GC.CollectionCount(0),
+                gen1Collections = GC.CollectionCount(1),
+                gen2Collections = GC.CollectionCount(2),
+                dpuHeartbeat = rt?.Dpus.Count > 0
+                    ? rt.Dpus.Max(d => d.LastCompletedCycleUtc.Ticks)
+                    : 0L,
+                iomapPending = 0,
+                iomapRejectedBackpressure = 0L,
+                iomapExpired = 0L,
+                iomapApplyFailed = 0L,
+                pointValueCacheCount = _compatGateway.Values.BindingCount,
+                writableRouteCount = _compatGateway.Values.WritableBindingCount,
+                dpus,
+            });
+        });
+
+        api.MapGet("/dpus", () =>
+        {
+            var rt = _host.Runtime;
+            string[] dpus = rt?.Dpus.Select(d => d.Name).ToArray() ?? [];
+            return Results.Json(new { count = dpus.Length, dpus });
+        });
+
+        api.MapGet("/dpu/blocks", (string? name) =>
+        {
+            var rt = RequireRuntime();
+            var dpu = rt.FindDpu(name ?? "");
+            if (dpu == null)
+                return Results.Json(new { dpu = name, count = 0, blocks = Array.Empty<object>() });
+
+            var blocks = dpu.Commands.Select(cmd => new
+            {
+                name = cmd.Name,
+                fcName = cmd.FcName,
+            }).ToArray();
+            return Results.Json(new { dpu = name, count = blocks.Length, blocks });
+        });
+
+        api.MapGet("/dpu/blocks/details", (string? dpu) =>
+        {
+            var rt = RequireRuntime();
+            var target = rt.FindDpu(dpu ?? "");
+            if (target == null)
+                return Results.Json(new { dpu, count = 0, blocks = Array.Empty<object>() });
+
+            var blocks = target.Commands.Select(cmd => new
+            {
+                name = cmd.Name,
+                pins = BuildLegacyBlockPinValues(cmd),
+            }).ToArray();
+            // 原版成功时直接返回数组，空 DPU 时才返回包装对象；此处保持原协议。
+            return Results.Json(blocks);
+        });
+
+        api.MapGet("/dpu/points", (string? name) =>
+        {
+            var rt = RequireRuntime();
+            var dpu = rt.FindDpu(name ?? "");
+            if (dpu == null)
+                return Results.Json(new { dpu = name, count = 0, points = Array.Empty<object>() });
+
+            var points = dpu.LocalSlots
+                .Where(kv => kv.Value.IsRealPoint)
+                .Select(kv => new
+                {
+                    name = kv.Key,
+                    type = kv.Value.Kind.ToString(),
+                    extra = (string[]?)null,
+                })
+                .ToArray();
+            return Results.Json(new { dpu = name, count = points.Length, points });
+        });
+
+        api.MapGet("/dpu/block", (string? dpu, string? block) =>
+        {
+            var rt = RequireRuntime();
+            if (!TryFindBlock(rt, dpu, block, out var d, out var cmd))
+                return Results.Json(new { dpu, block, count = 0, pins = Array.Empty<object>() });
+
+            var pins = BuildCompatPins(d, cmd, includePointName: false);
+            return Results.Json(new { dpu, block, count = pins.Count, pins });
+        });
+
+        api.MapGet("/dpu/block/pins", (string? dpu, string? name) =>
+        {
+            var rt = RequireRuntime();
+            if (!TryFindBlock(rt, dpu, name, out var d, out var cmd))
+                return Results.Json(new { dpu, block = name, count = 0, pins = Array.Empty<object>() });
+
+            var pins = BuildCompatPins(d, cmd, includePointName: true);
+            return Results.Json(new { dpu, block = name, count = pins.Count, pins });
+        });
+
+        api.MapGet("/dpu/block/full", (string? dpu, string? block) =>
+        {
+            var rt = RequireRuntime();
+            if (!TryFindBlock(rt, dpu, block, out var targetDpu, out var cmd))
+                return Results.Json(new { dpu, block, count = 0, pins = Array.Empty<object>() });
+
+            var pins = BuildCompatPinRows(targetDpu, cmd).Select(row =>
+            {
+                object? point = null;
+                if (!string.IsNullOrEmpty(row.PointName))
+                {
+                    string originalName = row.PointName;
+                    string cleanName = originalName.Split(':')[0];
+                    var found = FindPoint(rt, cleanName);
+                    point = found == null ? null : new
+                    {
+                        name = cleanName,
+                        originalName = originalName != cleanName ? originalName : null,
+                        dpu = found.Value.Dpu.Name,
+                        members = BuildLegacyPointMembers(found.Value.Dpu, cleanName, found.Value.Slot, searchProjection: false),
+                    };
+                }
+                return new { pin = row.Pin, point };
+            }).ToArray();
+            return Results.Json(new { dpu, block, count = pins.Length, pins });
+        });
+
+        api.MapGet("/dpu/block/pin/point", (string? dpu, string? block, string? pin) =>
+        {
+            var rt = RequireRuntime();
+            string? pointName = TryFindBlock(rt, dpu, block, out _, out var cmd)
+                ? FindCompatPinPointName(cmd, pin ?? "")
+                : null;
+            return Results.Json(new { dpu, block, pin, pointName });
+        });
+
+        api.MapPost("/dpu/pins/values", (CompatDpuPinRequest? request) =>
+        {
+            if (request == null || request.PinPaths == null || request.PinPaths.Count == 0)
+                return Results.Json(new { error = "请求体不能为空，需传入包含 Dpu 和 PinPaths 数组的对象" });
+
+            var rt = RequireRuntime();
+            var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+            foreach (string path in request.PinPaths)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                int dot = path.LastIndexOf('.');
+                if (dot < 0)
+                    continue;
+
+                string blockName = path[..dot];
+                string pinName = path[(dot + 1)..];
+                values[path] = TryFindBlock(rt, request.Dpu, blockName, out _, out var cmd)
+                    ? FormatCompatString(ReadBlockPinValue(cmd, pinName))
+                    : null;
+            }
+            return Results.Json(values);
+        });
+
+        api.MapPost("/point/SetVariables", (CompatSetVariablesRequest? request) =>
+        {
+            if (request == null)
+                return Results.Json(new { error = "请求体不能为空" });
+            if (request.Items == null || request.Items.Count == 0)
+                return Results.Json(new { error = "items 不能为空" });
+            if (request.Items.Count > LegacyMaxBatchItems)
+                return Results.Json(new { error = "单批最多 10,000 项" }, statusCode: StatusCodes.Status413PayloadTooLarge);
+
+            _ = RequireRuntime();
+            string clientInfo = string.IsNullOrWhiteSpace(request.ClientInfo) ? "HttpApi" : request.ClientInfo.Trim();
+            var results = new List<CompatSetVariablesItemResult>(request.Items.Count);
+            var names = new string[request.Items.Count];
+            var values = new object?[request.Items.Count];
+
+            for (int i = 0; i < request.Items.Count; i++)
+            {
+                var item = request.Items[i];
+                string? original = item?.PointName?.Trim();
+                string? pointName = string.IsNullOrEmpty(original)
+                    ? original
+                    : StripPrefixAndSuffix(original, "DCS01_", ".Value");
+                var result = new CompatSetVariablesItemResult
+                {
+                    Index = i,
+                    OriginalPointName = original,
+                    PointName = pointName,
+                    Success = false,
+                };
+                results.Add(result);
+
+                if (item == null)
+                {
+                    result.Error = "第 " + i + " 项不能为空";
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(pointName))
+                {
+                    result.Error = "pointName 不能为空";
+                    continue;
+                }
+                if (!TryGetJsonValue(item.Value, out object? value, out string? error))
+                {
+                    result.Error = error;
+                    continue;
+                }
+                if (value is string text && Encoding.UTF8.GetByteCount(text) > LegacyMaxStringValueBytes)
+                {
+                    result.Error = "单个字符串值超过 64 KiB";
+                    continue;
+                }
+
+                result.Value = value;
+                names[i] = pointName;
+                values[i] = value;
+            }
+
+            bool[] writeResults = _compatGateway.Values.WriteByNames(names, values, clientInfo);
+            int successCount = 0;
+            for (int i = 0; i < results.Count && i < writeResults.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(names[i]) || values[i] == null)
+                    continue;
+                results[i].Success = writeResults[i];
+                if (writeResults[i])
+                    successCount++;
+                else if (string.IsNullOrEmpty(results[i].Error))
+                    results[i].Error = "写入失败";
+            }
+
+            return Results.Json(new
+            {
+                clientInfo,
+                count = request.Items.Count,
+                successCount,
+                failCount = request.Items.Count - successCount,
+                results,
+            });
+        });
+
+        api.MapPost("/point/SetVariables2", (CompatSetVariables2Request? request) =>
+        {
+            if (request == null)
+                return Results.Json(new { error = "请求体不能为空" });
+            if (request.Items == null || request.Items.Count == 0)
+                return Results.Json(new { error = "items 不能为空" });
+            if (request.Items.Count > LegacyMaxBatchItems)
+                return Results.Json(new { error = "单批最多 10,000 项" }, statusCode: StatusCodes.Status413PayloadTooLarge);
+
+            string clientInfo = string.IsNullOrWhiteSpace(request.ClientInfo) ? "HttpApi" : request.ClientInfo.Trim();
+            int count = request.Items.Count;
+            var fsids = new long[count];
+            var values = new object?[count];
+            var results = new CompatSetVariables2ItemResult[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                CompatSetVariables2ItemRequest? item = request.Items[i];
+                var result = new CompatSetVariables2ItemResult
+                {
+                    Index = i,
+                    Fsid = item?.Fsid ?? 0,
+                };
+                results[i] = result;
+                if (item == null)
+                {
+                    result.Error = "第 " + i + " 项不能为空";
+                    continue;
+                }
+                if (item.Fsid <= 0)
+                {
+                    result.Error = "fsid 必须大于 0";
+                    continue;
+                }
+                if (!TryGetJsonValue(item.Value, out object? value, out string? error))
+                {
+                    result.Error = error;
+                    continue;
+                }
+                if (value is string text && Encoding.UTF8.GetByteCount(text) > LegacyMaxStringValueBytes)
+                {
+                    result.Error = "单个字符串值超过 64 KiB";
+                    continue;
+                }
+                fsids[i] = item.Fsid;
+                values[i] = value;
+                result.Value = value;
+            }
+
+            bool[] writeResults = _compatGateway.Values.WriteByHandles(fsids, values, clientInfo);
+            int successCount = 0;
+            for (int i = 0; i < count && i < writeResults.Length; i++)
+            {
+                if (fsids[i] <= 0)
+                    continue;
+                results[i].Success = writeResults[i];
+                if (writeResults[i])
+                    successCount++;
+                else if (string.IsNullOrEmpty(results[i].Error))
+                    results[i].Error = "写入失败";
+            }
+
+            return Results.Json(new
+            {
+                clientInfo,
+                count,
+                successCount,
+                failCount = count - successCount,
+                results,
+            });
+        });
+
+        api.MapPost("/point/SubscribeBatch", (CompatSubscribeBatchRequest? request) =>
+        {
+            if (request == null || request.DpuNames == null || request.Names == null || request.Members == null)
+                return Results.Json(Array.Empty<long>());
+
+            int count = request.Names.Length;
+            if (count == 0 || request.DpuNames.Length != count || request.Members.Length != count)
+                return Results.Json(Array.Empty<long>());
+
+            _ = RequireRuntime();
+            var canonicalNames = new string[count];
+            var nullNames = new bool[count];
+            for (int i = 0; i < count; i++)
+            {
+                string? name = request.Names[i];
+                if (name == null)
+                {
+                    nullNames[i] = true;
+                    canonicalNames[i] = "";
+                    continue;
+                }
+                canonicalNames[i] = BuildLegacySubscriptionName(request.DpuNames[i], name, request.Members[i]);
+            }
+
+            RealtimeSubscribeResult[] subscriptions = _compatGateway.Values.SubscribeByNames(canonicalNames);
+            var fsids = new long[count];
+            for (int i = 0; i < count; i++)
+                fsids[i] = nullNames[i] ? 0 : subscriptions[i].Found ? subscriptions[i].Handle : -1;
+            return Results.Json(fsids);
+        });
+
+        api.MapGet("/dpu/point", (string? dpu, string? point) =>
+        {
+            var rt = RequireRuntime();
+            var target = rt.FindDpu(dpu ?? "");
+            if (target == null || string.IsNullOrEmpty(point))
+                return Results.Json(new { dpu, point, count = 0, members = Array.Empty<object>() });
+
+            object[] members;
+            if (target.LocalSlots.TryGetValue(point, out var slot) && slot.IsRealPoint)
+                members = BuildLegacyPointMembers(target, point, slot, searchProjection: false);
+            else if (target.FindCommand(point) is { } command)
+                members = BuildLegacyBlockMembers(target, command);
+            else
+                members = [];
+            return Results.Json(new { dpu, point, count = members.Length, members });
+        });
+
+        api.MapPost("/point/GetPointValues", (List<string>? pointNames) =>
+        {
+            if (pointNames == null || pointNames.Count == 0)
+                return Results.Json(new { error = "请求体不能为空，需传入测点名称的数组" });
+
+            var rt = RequireRuntime();
+            var result = new Dictionary<string, string?>(pointNames.Count, StringComparer.Ordinal);
+            foreach (string raw in pointNames)
+            {
+                if (!TryParseCompatPointValueKey(raw, out string pointName, out string field, out string echoKey))
+                    continue;
+
+                result[echoKey] = field.ToLowerInvariant() switch
+                {
+                    "value" => FormatCompatString(ReadCompatPointValue(rt, pointName)),
+                    "eu" or "unit" => FindPointModel(pointName)?.Unit,
+                    "desc" or "description" => FindPointModel(pointName)?.Description,
+                    "minad" => FormatCompatString(FindPointModel(pointName)?.MinValue),
+                    "maxad" => FormatCompatString(FindPointModel(pointName)?.MaxValue),
+                    _ => null,
+                };
+            }
+            return Results.Json(result);
+        });
+
+        api.MapPost("/point/GetPointValues2", (List<string>? pointNames) =>
+        {
+            if (pointNames == null || pointNames.Count == 0)
+                return Results.Json(new { error = "请求体不能为空，需传入测点名称的数组" });
+
+            int count = pointNames.Count;
+            var cleanNames = new string[count];
+            var subscriptionNames = new string[count];
+            for (int i = 0; i < count; i++)
+            {
+                cleanNames[i] = StripPrefixAndSuffix(pointNames[i], "DCS01_", ".Value");
+                subscriptionNames[i] = cleanNames[i] + ".buffer";
+            }
+
+            RealtimeSubscribeResult[] subscriptions = _compatGateway.Values.SubscribeByNames(subscriptionNames);
+            long[] handles = subscriptions.Select(s => s.Found ? s.Handle : -1).ToArray();
+            var values = _compatGateway.Values.Read(handles);
+            var result = new Dictionary<string, string?>(count, StringComparer.Ordinal);
+            int n = Math.Min(count, values.Length);
+            for (int i = 0; i < n; i++)
+            {
+                if (string.IsNullOrEmpty(cleanNames[i]))
+                    continue;
+                result[cleanNames[i] + ".Value"] = handles[i] <= 0
+                    ? null
+                    : FormatCompatString(values[i].ToObject());
+            }
+            return Results.Json(result);
+        });
+
+        api.MapGet("/point/search", (string? name) =>
+        {
+            if (string.IsNullOrEmpty(name))
+                return Results.Json(new { error = "参数 name 不能为空" });
+
+            var rt = RequireRuntime();
+            var found = FindPoint(rt, name);
+            if (found == null)
+                return Results.Json(new { point = name, dpu = (string?)null, count = 0, members = Array.Empty<object>() });
+
+            object[] members = BuildLegacyPointMembers(found.Value.Dpu, name, found.Value.Slot, searchProjection: true);
+            return Results.Json(new { point = name, dpu = found.Value.Dpu.Name, count = members.Length, members });
+        });
+
+        api.MapGet("/value", (string? names) =>
+        {
+            if (string.IsNullOrEmpty(names))
+                return Results.Json(new { error = "参数 names 不能为空，格式: dpu.pointName 用逗号分隔" });
+
+            var rt = RequireRuntime();
+            string[] requested = names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var values = new List<object>(requested.Length);
+            foreach (string fullName in requested)
+            {
+                int dot = fullName.IndexOf('.');
+                if (dot < 0)
+                {
+                    var found = FindPoint(rt, fullName);
+                    if (found != null)
+                    {
+                        values.Add(new
+                        {
+                            name = fullName,
+                            members = BuildLegacyPointMembers(found.Value.Dpu, fullName, found.Value.Slot, searchProjection: false),
+                        });
+                    }
+                    else if (TryFindBlock(rt, null, fullName, out var foundDpu, out var foundBlock))
+                    {
+                        values.Add(new { name = fullName, members = BuildLegacyBlockMembers(foundDpu, foundBlock) });
+                    }
+                    else
+                    {
+                        values.Add(new { name = fullName, value = (object?)null, error = "未找到" });
+                    }
+                    continue;
+                }
+
+                string dpuName = fullName[..dot];
+                string pointName = fullName[(dot + 1)..];
+                DpuRuntime? dpu = rt.FindDpu(dpuName);
+                if (dpu != null && dpu.LocalSlots.TryGetValue(pointName, out var slot) && slot.IsRealPoint)
+                {
+                    values.Add(new
+                    {
+                        name = fullName,
+                        dpu = dpuName,
+                        members = BuildLegacyPointMembers(dpu, pointName, slot, searchProjection: false),
+                    });
+                }
+                else
+                {
+                    BlockCommand? command = dpu?.FindCommand(pointName);
+                    if (dpu != null && command != null)
+                        values.Add(new { name = fullName, dpu = dpuName, members = BuildLegacyBlockMembers(dpu, command) });
+                    else
+                        values.Add(new { name = fullName, value = (object?)null, error = "未找到" });
+                }
+            }
+            return Results.Json(new { count = values.Count, values });
+        });
+
+        api.MapPost("/point/setvalue", (CompatSetValueRequest? request) =>
+            SetLegacyPointValue(request, iomapOwned: false, useIomapClientInfo: false));
+
+        api.MapPost("/point/setvaluetest", (CompatSetValueRequest? request) =>
+            SetLegacyPointValue(request, iomapOwned: true, useIomapClientInfo: false));
+
+        api.MapPost("/point/setvaluetest2", (CompatSetValueRequest? request) =>
+            SetLegacyPointValue(request, iomapOwned: true, useIomapClientInfo: true));
+
+        api.MapPost("/pin/force", (CompatPinForceRequest? request) =>
+        {
+            if (request == null)
+                return Results.Json(new { error = "请求体不能为空" });
+            if (string.IsNullOrEmpty(request.Dpu) || string.IsNullOrEmpty(request.Block) || string.IsNullOrEmpty(request.Pin))
+                return Results.Json(new { error = "参数 dpu, block, pin 不能为空" });
+
+            var rt = RequireRuntime();
+            bool ok = false;
+            object? forceValue = TryGetJsonValue(request.Value, out var parsed, out _) ? parsed : null;
+            if (TryFindBlock(rt, request.Dpu, request.Block, out _, out var cmd))
+            {
+                try
+                {
+                    object? value = request.IsForce && forceValue != null
+                        ? TryParseCompatPinValue(cmd, request.Pin, forceValue)
+                        : request.IsForce ? null : ReadBlockPinValue(cmd, request.Pin) ?? 0;
+                    cmd.SetPinForce(request.Pin, request.IsForce, value!);
+                    ok = true;
+                }
+                catch
+                {
+                    ok = false;
+                }
+            }
+
+            return Results.Json(new
+            {
+                dpu = request.Dpu,
+                block = request.Block,
+                pin = request.Pin,
+                isForce = request.IsForce,
+                forceValue,
+                success = ok,
+            });
+        });
+
         // ---------------- 点详情（PointInfo）----------------
         api.MapGet("/point/{name}", (string name) =>
         {
@@ -360,23 +950,35 @@ public sealed class ApiServer : IAsyncDisposable
         // 名字形态与老系统订阅名一致：POINT、POINT.member、DPU$POINT.member（member 缺省 = buffer）
         api.MapPost("/values/read", (BatchReadRequest req) =>
         {
-            var rt = RequireRuntime();
-            var values = new object?[req.Names.Length];
-            for (int i = 0; i < req.Names.Length; i++)
-                values[i] = TryReadMember(rt, req.Names[i]);
+            var values = _compatGateway.Values.ReadByNames(req.Names);
             return Results.Json(new { values });
         });
 
         api.MapPost("/values/write", (BatchWriteRequest req) =>
         {
-            var rt = RequireRuntime();
-            var results = new bool[req.Items.Length];
-            for (int i = 0; i < req.Items.Length; i++)
+            var items = req.Items ?? [];
+            var names = new string[items.Length];
+            var values = new object?[items.Length];
+            var iomapOwned = new bool[items.Length];
+            for (int i = 0; i < items.Length; i++)
             {
-                var item = req.Items[i];
-                results[i] = TryWriteMember(rt, item.Name, item.Value);
+                var item = items[i];
+                if (item == null)
+                    continue;
+                names[i] = item.Name;
+                values[i] = item.Value;
+                iomapOwned[i] = item.IomapOwned;
             }
+            var results = _compatGateway.Values.WriteByNames(names, values, req.ClientInfo, iomapOwned);
             return Results.Json(new { results });
+        });
+
+        api.MapPost("/values/iomap/mark", (IomapMarkRequest req) =>
+        {
+            var rt = RequireRuntime();
+            var names = req.Names ?? [];
+            var results = _compatGateway.Values.MarkIomapByNames(names);
+            return Results.Json(new { results, ownedCount = rt.Iomap.OwnedCount });
         });
 
         // 批量类型描述：Remoting 适配器订阅时定型（保证回传老客户端的装箱类型一致）
@@ -718,6 +1320,479 @@ public sealed class ApiServer : IAsyncDisposable
         return val;
     }
 
+    private static void UseLegacyRequestLimits(WebApplication app)
+    {
+        app.Use(async (context, next) =>
+        {
+            bool isPost = HttpMethods.IsPost(context.Request.Method);
+            bool isLegacyPost = isPost && IsLegacyPostPath(context.Request.Path.Value);
+            bool isLegacyWrite = isLegacyPost
+                && (context.Request.Path.Value?.EndsWith("/api/point/SetVariables", StringComparison.OrdinalIgnoreCase) == true
+                    || context.Request.Path.Value?.EndsWith("/api/point/SetVariables2", StringComparison.OrdinalIgnoreCase) == true);
+            bool admitted = false;
+            MemoryStream? bufferedBody = null;
+            try
+            {
+                if (isLegacyPost && context.Request.ContentLength is > LegacyMaxRequestBodyBytes)
+                {
+                    await WriteLegacyError(context, StatusCodes.Status413PayloadTooLarge, "request body exceeds 4 MiB");
+                    return;
+                }
+
+                if (isLegacyWrite)
+                {
+                    admitted = LegacyWriteAdmission.Wait(0);
+                    if (!admitted)
+                    {
+                        await WriteLegacyError(context, StatusCodes.Status429TooManyRequests,
+                            "too many concurrent write requests");
+                        return;
+                    }
+                }
+
+                if (isLegacyPost)
+                {
+                    int capacity = context.Request.ContentLength is > 0 and <= LegacyMaxRequestBodyBytes
+                        ? (int)context.Request.ContentLength.Value
+                        : 0;
+                    bufferedBody = new MemoryStream(capacity);
+                    byte[] chunk = new byte[8192];
+                    int total = 0;
+                    while (true)
+                    {
+                        int read = await context.Request.Body.ReadAsync(chunk.AsMemory(0, chunk.Length), context.RequestAborted);
+                        if (read <= 0)
+                            break;
+                        total += read;
+                        if (total > LegacyMaxRequestBodyBytes)
+                        {
+                            await WriteLegacyError(context, StatusCodes.Status413PayloadTooLarge,
+                                "request body exceeds 4 MiB");
+                            return;
+                        }
+                        await bufferedBody.WriteAsync(chunk.AsMemory(0, read), context.RequestAborted);
+                    }
+                    bufferedBody.Position = 0;
+                    context.Request.Body = bufferedBody;
+                }
+
+                await next(context);
+            }
+            finally
+            {
+                if (admitted)
+                    LegacyWriteAdmission.Release();
+                if (bufferedBody != null)
+                    await bufferedBody.DisposeAsync();
+            }
+        });
+    }
+
+    private static bool IsLegacyPostPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return false;
+        return path.Equals("/api/dpu/pins/values", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/SetVariables", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/SetVariables2", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/SubscribeBatch", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/GetPointValues", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/GetPointValues2", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/setvalue", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/setvaluetest", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/point/setvaluetest2", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/pin/force", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Task WriteLegacyError(HttpContext context, int statusCode, string message)
+    {
+        context.Response.StatusCode = statusCode;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        return context.Response.WriteAsJsonAsync(new { error = message });
+    }
+
+    private static string BuildLegacySubscriptionName(string? dpu, string name, string? member)
+    {
+        string target = string.IsNullOrWhiteSpace(dpu) ? name : dpu + "$" + name;
+        return string.IsNullOrEmpty(member) ? target : target + "." + member;
+    }
+
+    private long GetLegacyHandle(string name)
+    {
+        RealtimeSubscribeResult result = _compatGateway.Values.SubscribeByNames([name])[0];
+        return result.Found ? result.Handle : -1;
+    }
+
+    private object[] BuildLegacyPointMembers(DpuRuntime dpu, string pointName, PointSlotRef slot,
+        bool searchProjection)
+    {
+        if (searchProjection)
+        {
+            string[] names = ["buffer", "isforced", "forcevalue", "istrace"];
+            var projected = new List<object>(names.Length);
+            foreach (string member in names)
+            {
+                object? value = member.Equals("buffer", StringComparison.OrdinalIgnoreCase)
+                    ? slot.ReadBoxedBuffer()
+                    : PointFieldAccess.TryRead(slot, member, out object? fieldValue, out _) ? fieldValue : null;
+                projected.Add(new
+                {
+                    name = member,
+                    value = TrimNullIfString(value),
+                    fsid = GetLegacyHandle(BuildLegacySubscriptionName(dpu.Name, pointName, member)),
+                });
+            }
+            return projected.ToArray();
+        }
+
+        return PointFieldAccess.ReadAll(slot).Select(field => (object)new
+        {
+            name = field.Name,
+            value = TrimNullIfString(field.Value),
+            fsid = GetLegacyHandle(BuildLegacySubscriptionName(dpu.Name, pointName, field.Name)),
+        }).ToArray();
+    }
+
+    private static object[] BuildLegacyBlockPinValues(BlockCommand cmd)
+    {
+        var schema = BlockStateSchema.For(cmd.Fc.GetType());
+        return schema.Fields
+            .Select(field => (object)new
+            {
+                name = field.Name,
+                value = TrimNullIfString(ReadBlockPinValue(cmd, field.Name)),
+            })
+            .ToArray();
+    }
+
+    private object[] BuildLegacyBlockMembers(DpuRuntime dpu, BlockCommand cmd)
+    {
+        return BlockStateSchema.For(cmd.Fc.GetType()).Fields.Select(field => (object)new
+        {
+            name = field.Name,
+            value = TrimNullIfString(ReadBlockPinValue(cmd, field.Name)),
+            fsid = GetLegacyHandle(BuildLegacySubscriptionName(dpu.Name, cmd.Name, field.Name)),
+        }).ToArray();
+    }
+
+    private List<CompatPinRow> BuildCompatPinRows(DpuRuntime dpu, BlockCommand cmd)
+    {
+        List<object> pins = BuildCompatPins(dpu, cmd, includePointName: false);
+        string[] names = BlockStateSchema.For(cmd.Fc.GetType()).Fields
+            .Select(field => field.Name)
+            .ToArray();
+        int count = Math.Min(pins.Count, names.Length);
+        var rows = new List<CompatPinRow>(count);
+        for (int i = 0; i < count; i++)
+            rows.Add(new CompatPinRow(pins[i], FindCompatPinPointName(cmd, names[i])));
+        return rows;
+    }
+
+    private IResult SetLegacyPointValue(CompatSetValueRequest? request, bool iomapOwned, bool useIomapClientInfo)
+    {
+        if (request == null)
+            return Results.Json(new { error = "请求体不能为空，请传入 JSON 对象" });
+
+        string? pointName = request.PointName?.Replace(".Value", "", StringComparison.Ordinal);
+        string? text = request.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? null
+            : request.Value.ToString();
+        if (string.IsNullOrWhiteSpace(pointName) || string.IsNullOrEmpty(text))
+            return Results.Json(new { error = "参数 PointName 或 Value 不能为空" });
+
+        if (!float.TryParse(text, out float value))
+            return Results.Json(new
+            {
+                pointName,
+                success = false,
+                error = "参数 Value 无法转换为数值类型",
+            });
+
+        string subscribedPoint = iomapOwned ? IomapOwnership.PointNamePrefix + pointName : pointName;
+        RealtimeSubscribeResult subscription = _compatGateway.Values
+            .SubscribeByNames([subscribedPoint + ".buffer"])[0];
+        if (!subscription.Found || subscription.Handle < 0)
+            return Results.Json(new { pointName, success = false, error = "订阅测点失败" });
+
+        string? clientInfo = useIomapClientInfo ? IomapOwnership.ClientInfoPrefix : null;
+        bool success = _compatGateway.Values.WriteByHandles([subscription.Handle], [value], clientInfo)[0];
+        if (iomapOwned)
+        {
+            return Results.Json(new
+            {
+                pointName,
+                fsid = subscription.Handle,
+                value = text,
+                iomapOwned = true,
+                success,
+            });
+        }
+        return Results.Json(new { pointName, fsid = subscription.Handle, value = text, success });
+    }
+
+    private static object? TryParseCompatPinValue(BlockCommand cmd, string pinName, object? value)
+    {
+        if (value == null)
+            return null;
+        FieldInfo? field = cmd.Fc.GetType().GetField(pinName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field == null)
+            return value;
+        return ParseForPin(cmd, pinName, FormatCompatString(value) ?? "");
+    }
+
+    private List<object> BuildCompatPins(DpuRuntime dpu, BlockCommand cmd, bool includePointName)
+    {
+        var result = new List<object>();
+        var schema = BlockStateSchema.For(cmd.Fc.GetType());
+        var forceStates = cmd.ForceStates;
+        foreach (var f in schema.Fields)
+        {
+            object? raw = f.Field.GetValue(cmd.Fc);
+            object? value = raw is IValuable valuable ? valuable.Value : raw;
+            object? forceValue = raw is IPointOperation po ? po.GetMemberValue("forcevalue") : null;
+            bool pinForce = raw is IPointOperation po2 && po2.IsForced != 0;
+            bool uiForce = false;
+            object? uiForceValue = null;
+            if (forceStates != null && forceStates.TryGetValue(f.Name, out var fs))
+            {
+                uiForce = fs.IsForced;
+                uiForceValue = fs.ForceValue;
+            }
+            if (uiForce)
+                forceValue = uiForceValue;
+
+            string? pointName = FindCompatPinPointName(cmd, f.Name);
+            long fsid = GetLegacyHandle(BuildLegacySubscriptionName(dpu.Name, cmd.Name, f.Name));
+            object? defaultValue = FindCompatPinDefault(dpu.Name, cmd.Name, f.Name);
+            string? display = f.Field.GetCustomAttribute<PinDisplayAttribute>()?.Display;
+
+            if (includePointName)
+            {
+                result.Add(new
+                {
+                    name = f.Name,
+                    pintype = f.PinType.ToString(),
+                    datatype = f.Field.FieldType.Name,
+                    value = TrimNullIfString(value),
+                    defaultvalue = TrimNullIfString(defaultValue),
+                    minvalue = TrimNullIfString(raw is IPointOperation po3 ? po3.GetMemberValue("minvalue") : null),
+                    maxvalue = TrimNullIfString(raw is IPointOperation po4 ? po4.GetMemberValue("maxvalue") : null),
+                    fsid,
+                    display,
+                    isForce = pinForce || uiForce,
+                    forceValue = TrimNullIfString(forceValue),
+                    isTrace = raw is IPointOperation po5 && po5.IsTrace,
+                    pointName,
+                });
+            }
+            else
+            {
+                result.Add(new
+                {
+                    name = f.Name,
+                    pintype = f.PinType.ToString(),
+                    datatype = f.Field.FieldType.Name,
+                    value = TrimNullIfString(value),
+                    defaultvalue = TrimNullIfString(defaultValue),
+                    minvalue = TrimNullIfString(raw is IPointOperation po3 ? po3.GetMemberValue("minvalue") : null),
+                    maxvalue = TrimNullIfString(raw is IPointOperation po4 ? po4.GetMemberValue("maxvalue") : null),
+                    fsid,
+                    display,
+                    isForce = pinForce || uiForce,
+                    forceValue = TrimNullIfString(forceValue),
+                    isTrace = raw is IPointOperation po5 && po5.IsTrace,
+                    dpu = dpu.Name,
+                    block = cmd.Name,
+                });
+            }
+        }
+        return result;
+    }
+
+    private object? FindCompatPinDefault(string dpuName, string blockName, string pinName)
+    {
+        var controller = _host.PristineModel?.Controllers
+            .FirstOrDefault(c => c.Name.Equals(dpuName, StringComparison.OrdinalIgnoreCase));
+        var block = controller?.Blocks
+            .FirstOrDefault(b => b.Name.Equals(blockName, StringComparison.OrdinalIgnoreCase));
+        return block?.Pins
+            .FirstOrDefault(p => p.PinName.Equals(pinName, StringComparison.OrdinalIgnoreCase))
+            ?.DefaultValue;
+    }
+
+    private static string? FindCompatPinPointName(BlockCommand cmd, string pinName)
+    {
+        foreach (var b in cmd.Inputs)
+            if (b.Pin.Field.Name.Equals(pinName, StringComparison.OrdinalIgnoreCase))
+                return b.PointName;
+        foreach (var b in cmd.Outputs)
+            if (b.Pin.Field.Name.Equals(pinName, StringComparison.OrdinalIgnoreCase))
+                return b.PointName;
+        return null;
+    }
+
+    private static object? ReadBlockPinValue(BlockCommand cmd, string pinName)
+    {
+        var fi = cmd.Fc.GetType().GetField(pinName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (fi == null)
+            return null;
+        object? raw = fi.GetValue(cmd.Fc);
+        return raw is IValuable valuable ? valuable.Value : raw;
+    }
+
+    private object? ReadCompatPointValue(DcsRuntime rt, string pointName)
+    {
+        return rt.TryGetSlot(pointName, out var slot) && slot.IsRealPoint
+            ? slot.ReadBoxedBuffer()
+            : FindPoint(rt, pointName)?.Slot.ReadBoxedBuffer();
+    }
+
+    private PointModel? FindPointModel(string pointName)
+    {
+        var model = _host.PristineModel;
+        if (model == null)
+            return null;
+        foreach (var c in model.Controllers)
+        foreach (var p in c.Points)
+            if (p.Name.Equals(pointName, StringComparison.OrdinalIgnoreCase))
+                return p;
+        return null;
+    }
+
+    private static bool TryParseCompatPointValueKey(string? raw, out string pointName, out string field, out string echoKey)
+    {
+        pointName = "";
+        field = "";
+        echoKey = "";
+        if (string.IsNullOrEmpty(raw))
+            return false;
+
+        string pointPart;
+        int dot = raw.LastIndexOf('.');
+        if (dot <= 0 || dot >= raw.Length - 1)
+        {
+            pointPart = raw;
+            field = "Value";
+            echoKey = raw + ".Value";
+        }
+        else
+        {
+            pointPart = raw[..dot];
+            field = raw[(dot + 1)..];
+            echoKey = raw;
+        }
+
+        pointName = StripPrefixAndSuffix(pointPart, "DCS01_", null);
+        return pointName.Length > 0;
+    }
+
+    private static string StripPrefixAndSuffix(string? value, string? prefix, string? suffix)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "";
+
+        int start = 0;
+        int length = value.Length;
+        if (!string.IsNullOrEmpty(prefix) && value.Length >= prefix.Length &&
+            string.Compare(value, 0, prefix, 0, prefix.Length, StringComparison.OrdinalIgnoreCase) == 0)
+        {
+            start = prefix.Length;
+            length -= prefix.Length;
+        }
+
+        if (!string.IsNullOrEmpty(suffix) && length >= suffix.Length &&
+            string.Compare(value, start + length - suffix.Length, suffix, 0, suffix.Length, StringComparison.OrdinalIgnoreCase) == 0)
+        {
+            length -= suffix.Length;
+        }
+
+        return start == 0 && length == value.Length ? value : value.Substring(start, length);
+    }
+
+    private static object? TrimNullIfString(object? value)
+    {
+        if (value is not string s)
+            return value;
+        int idx = s.IndexOf('\0');
+        return idx >= 0 ? s[..idx] : s;
+    }
+
+    private static string? FormatCompatString(object? value)
+    {
+        return value switch
+        {
+            null => null,
+            float f => f.ToString("R", CultureInfo.InvariantCulture),
+            double d => d.ToString("R", CultureInfo.InvariantCulture),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            _ => value.ToString(),
+        };
+    }
+
+    private static bool TryGetJsonValue(JsonElement value, out object? result, out string? error)
+    {
+        error = null;
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Undefined:
+            case JsonValueKind.Null:
+                result = null;
+                error = "value 不能为空";
+                return false;
+            case JsonValueKind.True:
+                result = true;
+                return true;
+            case JsonValueKind.False:
+                result = false;
+                return true;
+            case JsonValueKind.Number:
+                if (value.TryGetInt64(out long l))
+                    result = l;
+                else
+                    result = value.GetDouble();
+                return true;
+            case JsonValueKind.String:
+                result = value.GetString();
+                return true;
+            default:
+                result = null;
+                error = "value 仅支持 JSON 基本类型";
+                return false;
+        }
+    }
+
+    private static bool TryFindBlock(DcsRuntime rt, string? dpuName, string? blockName,
+        out DpuRuntime dpu, out BlockCommand cmd)
+    {
+        dpu = null!;
+        cmd = null!;
+        if (string.IsNullOrWhiteSpace(blockName))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(dpuName))
+        {
+            dpu = rt.FindDpu(dpuName)!;
+            if (dpu == null)
+                return false;
+            cmd = dpu.FindCommand(blockName)!;
+            return cmd != null;
+        }
+
+        foreach (var d in rt.Dpus)
+        {
+            var c = d.FindCommand(blockName);
+            if (c != null)
+            {
+                dpu = d;
+                cmd = c;
+                return true;
+            }
+        }
+        return false;
+    }
+
     private DcsRuntime RequireRuntime()
         => _host.Runtime ?? throw new InvalidOperationException("尚未装载工程");
 
@@ -740,7 +1815,7 @@ public sealed class ApiServer : IAsyncDisposable
     {
         if (TryResolveMember(rt, name, out var slot, out string member))
         {
-            if (member.Length == 0 || member.Equals("buffer", StringComparison.OrdinalIgnoreCase))
+            if (IsBufferMember(member))
                 return slot.ReadBoxedBuffer();
             foreach (var f in PointFieldAccess.ReadAll(slot))
             {
@@ -764,15 +1839,18 @@ public sealed class ApiServer : IAsyncDisposable
     }
 
     /// <summary>按 [DPU$]NAME[.member] 写值；点不中则尝试块字段。返回是否成功。</summary>
-    private bool TryWriteMember(DcsRuntime rt, string name, string value)
+    private bool TryWriteMember(DcsRuntime rt, string name, string value, string? clientInfo = null, bool iomapOwned = false)
     {
         if (TryResolveMember(rt, name, out var slot, out string member))
         {
-            if (member.Length == 0 || member.Equals("buffer", StringComparison.OrdinalIgnoreCase))
+            if (IsBufferMember(member))
             {
                 try
                 {
-                    slot.WriteBoxedBuffer(ParsePointValue(slot.Kind, value));
+                    object parsed = ParsePointValue(slot.Kind, value);
+                    slot.WriteBoxedBuffer(parsed);
+                    if (iomapOwned || IomapOwnership.IsIomapClient(clientInfo))
+                        rt.Iomap.SetOwnedValue(slot, parsed);
                     return true;
                 }
                 catch
@@ -805,7 +1883,7 @@ public sealed class ApiServer : IAsyncDisposable
     {
         if (TryResolveMember(rt, name, out var slot, out string member))
         {
-            if (member.Length == 0 || member.Equals("buffer", StringComparison.OrdinalIgnoreCase))
+            if (IsBufferMember(member))
             {
                 // 与 ReadBoxedBuffer 的装箱类型对齐
                 string vt = slot.Kind switch
@@ -845,12 +1923,37 @@ public sealed class ApiServer : IAsyncDisposable
         return new { found = false, target = (string?)null, kind = (string?)null, valueType = (string?)null, writable = false };
     }
 
+    private static bool IsBufferMember(string member)
+        => member.Length == 0
+           || member.Equals("buffer", StringComparison.OrdinalIgnoreCase)
+           || member.Equals("value", StringComparison.OrdinalIgnoreCase);
+
+    private static string StripIomapPointNamePrefixInSubscriptionName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return name;
+
+        int dollar = name.IndexOf('$');
+        if (dollar > 0 && dollar < name.Length - 1)
+        {
+            string rest = name[(dollar + 1)..];
+            return IomapOwnership.HasPointNamePrefix(rest)
+                ? name[..(dollar + 1)] + IomapOwnership.StripPointNamePrefix(rest)
+                : name;
+        }
+
+        return IomapOwnership.HasPointNamePrefix(name)
+            ? IomapOwnership.StripPointNamePrefix(name)
+            : name;
+    }
+
     /// <summary>
     /// 名字解析。点名可能本身含 '$' 与 '.'（本工程中间点如 1001$83$PAI121.OUT），
     /// 所以顺序是：整名全局命中 → DPU$ 前缀限定命中 → 按最后一个 '.' 拆成员再查。
     /// </summary>
     private bool TryResolveMember(DcsRuntime rt, string name, out PointSlotRef slot, out string member)
     {
+        name = StripIomapPointNamePrefixInSubscriptionName(name);
         member = "";
 
         // 1) 整名直接命中（优先级最高，避免把点名里的 $ / . 误当分隔符）
@@ -974,10 +2077,9 @@ public sealed class ApiServer : IAsyncDisposable
             slot = default;
             return false;
         }
-        foreach (var d in rt.Dpus)
+        if (rt.TryGetSlot(pointName, out slot) && slot.IsRealPoint)
         {
-            if (d.LocalSlots.TryGetValue(pointName, out slot) && slot.IsRealPoint)
-                return true;
+            return true;
         }
         slot = default;
         return false;
@@ -1107,6 +2209,96 @@ public sealed class ApiServer : IAsyncDisposable
     public sealed record CommitDownloadRequest(string PlanId, bool? Backup);
     public sealed record HotloadRequest(string[] Targets);
     public sealed record BatchReadRequest(string[] Names);
-    public sealed record BatchWriteRequest(BatchWriteItem[] Items);
-    public sealed record BatchWriteItem(string Name, string Value);
+
+    public sealed class BatchWriteRequest
+    {
+        public string? ClientInfo { get; set; }
+        public BatchWriteItem[] Items { get; set; } = [];
+    }
+
+    public sealed class BatchWriteItem
+    {
+        public string Name { get; set; } = "";
+        public string Value { get; set; } = "";
+        public bool IomapOwned { get; set; }
+    }
+
+    public sealed class IomapMarkRequest
+    {
+        public string[] Names { get; set; } = [];
+    }
+
+    public sealed class CompatDpuPinRequest
+    {
+        public string Dpu { get; set; } = "";
+        public List<string> PinPaths { get; set; } = [];
+    }
+
+    public sealed class CompatSetVariablesRequest
+    {
+        public string? ClientInfo { get; set; }
+        public List<CompatSetVariablesItemRequest> Items { get; set; } = [];
+    }
+
+    public sealed class CompatSetVariablesItemRequest
+    {
+        public string? PointName { get; set; }
+        public JsonElement Value { get; set; }
+    }
+
+    public sealed class CompatSetVariablesItemResult
+    {
+        public int Index { get; set; }
+        public string? OriginalPointName { get; set; }
+        public string? PointName { get; set; }
+        public object? Value { get; set; }
+        public bool Success { get; set; }
+        public string? Error { get; set; }
+    }
+
+    public sealed class CompatSetVariables2Request
+    {
+        public string? ClientInfo { get; set; }
+        public List<CompatSetVariables2ItemRequest?> Items { get; set; } = [];
+    }
+
+    public sealed class CompatSetVariables2ItemRequest
+    {
+        public long Fsid { get; set; }
+        public JsonElement Value { get; set; }
+    }
+
+    public sealed class CompatSetVariables2ItemResult
+    {
+        public int Index { get; set; }
+        public long Fsid { get; set; }
+        public object? Value { get; set; }
+        public bool Success { get; set; }
+        public string? Error { get; set; }
+    }
+
+    public sealed class CompatSubscribeBatchRequest
+    {
+        public string?[] DpuNames { get; set; } = [];
+        public string?[] Names { get; set; } = [];
+        public string?[] Members { get; set; } = [];
+        public bool Unknow { get; set; }
+    }
+
+    public sealed class CompatPinForceRequest
+    {
+        public string Dpu { get; set; } = "";
+        public string Block { get; set; } = "";
+        public string Pin { get; set; } = "";
+        public bool IsForce { get; set; }
+        public JsonElement Value { get; set; }
+    }
+
+    public sealed class CompatSetValueRequest
+    {
+        public string? PointName { get; set; }
+        public JsonElement Value { get; set; }
+    }
+
+    private sealed record CompatPinRow(object Pin, string? PointName);
 }

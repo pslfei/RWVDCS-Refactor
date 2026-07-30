@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.Remoting;
@@ -18,6 +19,7 @@ namespace RWVDCS.LegacyTestClient
     /// 连接兼容适配器，验证订阅/读写/回调/运行控制/元数据全链路。
     /// 用法：rwvdcs-legacy-client [--server tcp://localhost:8000/Communication]
     ///       [--points 名1,名2,...] [--watch 秒] [--set 名=值] [--run|--pause|--step]
+    ///       [--bench 批量读次数]
     /// </summary>
     internal static class Program
     {
@@ -100,6 +102,7 @@ namespace RWVDCS.LegacyTestClient
             string pointDetail = null;
             string saveCond = null;
             string loadCond = null;
+            int benchIterations = 0;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -108,6 +111,7 @@ namespace RWVDCS.LegacyTestClient
                     case "--server": server = args[++i]; break;
                     case "--points": points = args[++i].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries); break;
                     case "--watch": watchSeconds = int.Parse(args[++i]); break;
+                    case "--bench": benchIterations = int.Parse(args[++i]); break;
                     case "--set": setExpr = args[++i]; break;
                     case "--run": runCmd = "run"; break;
                     case "--pause": runCmd = "pause"; break;
@@ -118,7 +122,7 @@ namespace RWVDCS.LegacyTestClient
                     case "--loadcond": loadCond = args[++i]; break;
                     case "-h":
                     case "--help":
-                        Console.WriteLine("用法: rwvdcs-legacy-client [--server tcp://...] [--points 名1,名2] [--watch 秒] [--set 名=值]");
+                        Console.WriteLine("用法: rwvdcs-legacy-client [--server tcp://...] [--points 名1,名2] [--watch 秒] [--set 名=值] [--bench 次数]");
                         Console.WriteLine("      [--run|--pause|--step] [--block DPU/块名] [--pointdetail 点名] [--savecond 名] [--loadcond 名]");
                         return 0;
                 }
@@ -150,7 +154,9 @@ namespace RWVDCS.LegacyTestClient
 
             if (points.Length > 0)
             {
+                var subscribeWatch = Stopwatch.StartNew();
                 long[] handles = comm.Subscribe(client, points);
+                subscribeWatch.Stop();
                 Console.WriteLine("订阅结果:");
                 for (int i = 0; i < points.Length; i++)
                     Console.WriteLine($"  {points[i],-40} handle={handles[i]}");
@@ -159,6 +165,29 @@ namespace RWVDCS.LegacyTestClient
                 Console.WriteLine("GetValue:");
                 for (int i = 0; i < points.Length; i++)
                     Console.WriteLine($"  {points[i],-40} = {FormatValue(values[i])}");
+
+                if (benchIterations > 0)
+                {
+                    int warmup = Math.Min(20, benchIterations);
+                    for (int i = 0; i < warmup; i++)
+                        comm.GetValue(client, handles);
+
+                    var sw = Stopwatch.StartNew();
+                    for (int i = 0; i < benchIterations; i++)
+                        comm.GetValue(client, handles);
+                    sw.Stop();
+                    Console.WriteLine($"批量读基准: {benchIterations} 次 x {handles.Length} 点，总计 {sw.Elapsed.TotalMilliseconds:F1} ms，"
+                                      + $"平均 {sw.Elapsed.TotalMilliseconds / benchIterations:F3} ms/批");
+                    Console.WriteLine($"订阅基准: {handles.Length} 点，{subscribeWatch.Elapsed.TotalMilliseconds:F1} ms");
+
+                    sw.Restart();
+                    int writeSuccess = 0;
+                    for (int i = 0; i < benchIterations; i++)
+                        writeSuccess += comm.SetValue(client, handles, values).Count(ok => ok);
+                    sw.Stop();
+                    Console.WriteLine($"批量写基准: {benchIterations} 次 x {handles.Length} 点，总计 {sw.Elapsed.TotalMilliseconds:F1} ms，"
+                                      + $"平均 {sw.Elapsed.TotalMilliseconds / benchIterations:F3} ms/批，成功 {writeSuccess}/{benchIterations * handles.Length}");
+                }
 
                 if (setExpr != null)
                 {
