@@ -775,7 +775,8 @@ public sealed class ApiServer : IAsyncDisposable
                         values.Add(new
                         {
                             name = fullName,
-                            members = BuildLegacyPointMembers(found.Value.Dpu, fullName, found.Value.Slot, searchProjection: false),
+                            members = BuildLegacyPointMembers(found.Value.Dpu, fullName, found.Value.Slot,
+                                searchProjection: false, includeEngineeringMetadata: true),
                         });
                     }
                     else if (TryFindBlock(rt, null, fullName, out var foundDpu, out var foundBlock))
@@ -798,7 +799,8 @@ public sealed class ApiServer : IAsyncDisposable
                     {
                         name = fullName,
                         dpu = dpuName,
-                        members = BuildLegacyPointMembers(dpu, pointName, slot, searchProjection: false),
+                        members = BuildLegacyPointMembers(dpu, pointName, slot,
+                            searchProjection: false, includeEngineeringMetadata: true),
                     });
                 }
                 else
@@ -1424,7 +1426,7 @@ public sealed class ApiServer : IAsyncDisposable
     }
 
     private object[] BuildLegacyPointMembers(DpuRuntime dpu, string pointName, PointSlotRef slot,
-        bool searchProjection)
+        bool searchProjection, bool includeEngineeringMetadata = false)
     {
         if (searchProjection)
         {
@@ -1445,13 +1447,35 @@ public sealed class ApiServer : IAsyncDisposable
             return projected.ToArray();
         }
 
-        return PointFieldAccess.ReadAll(slot).Select(field => (object)new
+        var members = PointFieldAccess.ReadAll(slot).Select(field => (object)new
         {
             name = field.Name,
             value = TrimNullIfString(field.Value),
             fsid = GetLegacyHandle(BuildLegacySubscriptionName(dpu.Name, pointName, field.Name)),
-        }).ToArray();
+        }).ToList();
+
+        if (includeEngineeringMetadata)
+        {
+            PointModel? point = _host.TryGetPointModel(dpu.Name, pointName, out var model) ? model : null;
+            members.Add(BuildEngineeringMetadataMember("LowAlarmLimit1Value", point?.LowAlarmLimit1Value));
+            members.Add(BuildEngineeringMetadataMember("LowAlarmLimit2Value", point?.LowAlarmLimit2Value));
+            members.Add(BuildEngineeringMetadataMember("LowAlarmLimit3Value", point?.LowAlarmLimit3Value));
+            members.Add(BuildEngineeringMetadataMember("HighAlarmLimit1Value", point?.HighAlarmLimit1Value));
+            members.Add(BuildEngineeringMetadataMember("HighAlarmLimit2Value", point?.HighAlarmLimit2Value));
+            members.Add(BuildEngineeringMetadataMember("HighAlarmLimit3Value", point?.HighAlarmLimit3Value));
+            members.Add(BuildEngineeringMetadataMember("Description", point?.Description));
+            members.Add(BuildEngineeringMetadataMember("Unit", point?.Unit));
+        }
+
+        return members.ToArray();
     }
+
+    private static object BuildEngineeringMetadataMember(string name, object? value) => new
+    {
+        name,
+        value,
+        fsid = -1L,
+    };
 
     private static object[] BuildLegacyBlockPinValues(BlockCommand cmd)
     {

@@ -67,6 +67,8 @@ public sealed class RuntimeHost : IDisposable
     private readonly SemaphoreSlim _structureLock = new(1, 1);
     private readonly List<VersionEntry> _versions = [];
     private DownloadPlan? _pendingPlan;
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> _pointMetadataByDpu =
+        new Dictionary<string, IReadOnlyDictionary<string, PointModel>>(StringComparer.OrdinalIgnoreCase);
 
     public LogBuffer Log { get; } = new();
     public ConditionStore Store { get; }
@@ -88,6 +90,16 @@ public sealed class RuntimeHost : IDisposable
     public RuntimeBuildReport? BuildReport { get; private set; }
 
     public bool ProjectLoaded => Runtime != null;
+
+    /// <summary>按 DPU/点名 O(1) 查询当前代的只读工程元数据。</summary>
+    public bool TryGetPointModel(string dpuName, string pointName, out PointModel point)
+    {
+        var index = _pointMetadataByDpu;
+        if (index.TryGetValue(dpuName, out var points) && points.TryGetValue(pointName, out point!))
+            return true;
+        point = null!;
+        return false;
+    }
 
     /// <summary>Runtime 即将被替换；实时兼容层据此停止向旧 Arena 发起读写。</summary>
     public event Action? RuntimeChanging;
@@ -159,6 +171,7 @@ public sealed class RuntimeHost : IDisposable
         // 立新
         Runtime = newRuntime;
         PristineModel = pristine;
+        _pointMetadataByDpu = BuildPointMetadataIndex(pristine);
         MdbPath = mdbPath;
         Fingerprint = fingerprint;
         LoadedAtUtc = DateTime.UtcNow;
@@ -184,6 +197,23 @@ public sealed class RuntimeHost : IDisposable
             Scheduler.Pause(); // 保留暂停态：下装/换代后单步继续有效
 
         RuntimeSwapped?.Invoke();
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> BuildPointMetadataIndex(
+        EngineeringModel model)
+    {
+        var byDpu = new Dictionary<string, IReadOnlyDictionary<string, PointModel>>(
+            model.Controllers.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var controller in model.Controllers)
+        {
+            var points = new Dictionary<string, PointModel>(StringComparer.OrdinalIgnoreCase);
+            foreach (var point in controller.Points)
+                points.TryAdd(point.Name, point); // 与 RuntimeBuilder 的重名首见生效一致
+            byDpu.TryAdd(controller.Name, points);
+        }
+
+        return byDpu;
     }
 
     private DcsRuntime RequireRuntime() => Runtime ?? throw new InvalidOperationException("尚未装载工程");

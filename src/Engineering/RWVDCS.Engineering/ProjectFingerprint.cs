@@ -37,6 +37,14 @@ public static class ProjectFingerprint
                     w.Write(FormatValue(p.DefaultValue));
                     w.Write(p.MaxValue);
                     w.Write(p.MinValue);
+                    w.Write(p.LowAlarmLimit1Value);
+                    w.Write(p.LowAlarmLimit2Value);
+                    w.Write(p.LowAlarmLimit3Value);
+                    w.Write(p.HighAlarmLimit1Value);
+                    w.Write(p.HighAlarmLimit2Value);
+                    w.Write(p.HighAlarmLimit3Value);
+                    w.Write(p.Description ?? "");
+                    w.Write(p.Unit ?? "");
                 }
 
                 w.Write(c.Blocks.Count);

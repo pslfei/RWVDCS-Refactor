@@ -67,6 +67,18 @@ public sealed class PointModel
     public float MaxValue { get; init; }
     /// <summary>仅 LA 使用（写入 minvalue 字段）。</summary>
     public float MinValue { get; init; }
+    /// <summary>工程库配置的低报警一级限值（只读元数据，不进入实时点结构）。</summary>
+    public double LowAlarmLimit1Value { get; init; }
+    /// <summary>工程库配置的低报警二级限值（只读元数据，不进入实时点结构）。</summary>
+    public double LowAlarmLimit2Value { get; init; }
+    /// <summary>工程库配置的低报警三级限值（只读元数据，不进入实时点结构）。</summary>
+    public double LowAlarmLimit3Value { get; init; }
+    /// <summary>工程库配置的高报警一级限值（只读元数据，不进入实时点结构）。</summary>
+    public double HighAlarmLimit1Value { get; init; }
+    /// <summary>工程库配置的高报警二级限值（只读元数据，不进入实时点结构）。</summary>
+    public double HighAlarmLimit2Value { get; init; }
+    /// <summary>工程库配置的高报警三级限值（只读元数据，不进入实时点结构）。</summary>
+    public double HighAlarmLimit3Value { get; init; }
     public string? Unit { get; init; }
     public string? Description { get; init; }
 }

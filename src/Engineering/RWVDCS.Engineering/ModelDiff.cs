@@ -107,6 +107,22 @@ public static class ModelDiff
                 changes.Add($"量程上限 {op.MaxValue}→{np.MaxValue}");
             if (op.MinValue != np.MinValue)
                 changes.Add($"量程下限 {op.MinValue}→{np.MinValue}");
+            if (op.LowAlarmLimit1Value != np.LowAlarmLimit1Value)
+                changes.Add($"低报警一级限值 {op.LowAlarmLimit1Value}→{np.LowAlarmLimit1Value}");
+            if (op.LowAlarmLimit2Value != np.LowAlarmLimit2Value)
+                changes.Add($"低报警二级限值 {op.LowAlarmLimit2Value}→{np.LowAlarmLimit2Value}");
+            if (op.LowAlarmLimit3Value != np.LowAlarmLimit3Value)
+                changes.Add($"低报警三级限值 {op.LowAlarmLimit3Value}→{np.LowAlarmLimit3Value}");
+            if (op.HighAlarmLimit1Value != np.HighAlarmLimit1Value)
+                changes.Add($"高报警一级限值 {op.HighAlarmLimit1Value}→{np.HighAlarmLimit1Value}");
+            if (op.HighAlarmLimit2Value != np.HighAlarmLimit2Value)
+                changes.Add($"高报警二级限值 {op.HighAlarmLimit2Value}→{np.HighAlarmLimit2Value}");
+            if (op.HighAlarmLimit3Value != np.HighAlarmLimit3Value)
+                changes.Add($"高报警三级限值 {op.HighAlarmLimit3Value}→{np.HighAlarmLimit3Value}");
+            if (!string.Equals(op.Description, np.Description, StringComparison.Ordinal))
+                changes.Add($"描述 {op.Description}→{np.Description}");
+            if (!string.Equals(op.Unit, np.Unit, StringComparison.Ordinal))
+                changes.Add($"单位 {op.Unit}→{np.Unit}");
             if (changes.Count > 0)
                 report.Entries.Add(new DiffEntry(DiffKind.PointChanged, oldC.Name, name, string.Join("；", changes)));
         }

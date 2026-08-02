@@ -1,4 +1,4 @@
-# 启动 RWVDCS Web 管理台
+﻿# 启动 RWVDCS Web 管理台
 # 用法: .\start-web.ps1 [-Port 8090] [-Mdb <工程.mdb>] [-DataDir <目录>] [-ArenaDir <目录>] [-Start] [-Release] [-NoWindow]
 param(
     [int]$Port = 8090,

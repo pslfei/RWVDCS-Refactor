@@ -43,7 +43,9 @@ public static class MdbEngineeringReader
         // 预取五表（对齐 PrefetchAllByControllers 的全表拉取 + 按控制器分组）。
         // 无 ORDER BY：必须保持 mdb 自然行序（见类注释，行序影响粘滞语义与命令顺序）
         var varsByCtrl = GroupBy(Query(conn,
-            "SELECT ID, Name, DataType, DefaultValue, MinimumScale, MaximunScale, ForceValue, Unit, Description, Prj_Controller_ID FROM Cfg_VarSystem"),
+            "SELECT ID, Name, DataType, DefaultValue, MinimumScale, MaximunScale, ForceValue, Unit, Description, " +
+            "LowAlarmLimit1Value, LowAlarmLimit2Value, LowAlarmLimit3Value, " +
+            "HighAlarmLimit1Value, HighAlarmLimit2Value, HighAlarmLimit3Value, Prj_Controller_ID FROM Cfg_VarSystem"),
             r => (int)r["Prj_Controller_ID"]);
         var blocksByCtrl = GroupBy(Query(conn,
             "SELECT ID, Name, AlgName, FunctionName, Description, Prj_Controller_ID FROM Cld_FCBlock"),
@@ -123,27 +125,44 @@ public static class MdbEngineeringReader
                 forceValue = float.Parse(force, CultureInfo.InvariantCulture);
             _ = forceValue; // 老系统解析后并未写入点（Dpu.cs 1447-1477 只写 buffer/max/min）
 
+            // 报警限值是逐点工程元数据，不采用默认值/量程的跨行粘滞语义。
+            // 空值或旧工程中的非法值按 0 处理，与原系统报警配置的默认意图一致。
+            double lowAlarm1 = ReadAlarmLimit(row, "LowAlarmLimit1Value");
+            double lowAlarm2 = ReadAlarmLimit(row, "LowAlarmLimit2Value");
+            double lowAlarm3 = ReadAlarmLimit(row, "LowAlarmLimit3Value");
+            double highAlarm1 = ReadAlarmLimit(row, "HighAlarmLimit1Value");
+            double highAlarm2 = ReadAlarmLimit(row, "HighAlarmLimit2Value");
+            double highAlarm3 = ReadAlarmLimit(row, "HighAlarmLimit3Value");
+
             PointModel? p = dataType switch
             {
                 "LA" => new PointModel
                 {
                     Name = name, DataType = dataType, DefaultValue = fDefaultValue,
                     MaxValue = maxValue, MinValue = minValue,
+                    LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
+                    HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LD" => new PointModel
                 {
                     Name = name, DataType = dataType, DefaultValue = bDefaultValue,
+                    LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
+                    HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LP" => new PointModel
                 {
                     Name = name, DataType = dataType, DefaultValue = (short)0,
+                    LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
+                    HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LP32" => new PointModel
                 {
                     Name = name, DataType = dataType, DefaultValue = 0L,
+                    LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
+                    HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 _ => null, // 其他类型老系统同样忽略
@@ -462,6 +481,29 @@ public static class MdbEngineeringReader
     }
 
     private static string Str(object? v) => v is DBNull or null ? "" : (string)v;
+
+    private static double ReadAlarmLimit(Dictionary<string, object> row, string column)
+    {
+        if (!row.TryGetValue(column, out object? raw) || raw is null or DBNull)
+            return 0d;
+
+        if (raw is string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return 0d;
+            return double.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands,
+                CultureInfo.InvariantCulture, out double parsed) ? parsed : 0d;
+        }
+
+        try
+        {
+            return Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return 0d;
+        }
+    }
 }
 
 /// <summary>
