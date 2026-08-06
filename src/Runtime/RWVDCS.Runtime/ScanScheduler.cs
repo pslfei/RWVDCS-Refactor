@@ -99,6 +99,7 @@ public sealed class ScanScheduler : IDisposable
 {
     private readonly DcsRuntime _runtime;
     private readonly Lock _gate = new();
+    private readonly Lock _lifecycleGate = new();
     private readonly DpuCycleStats[] _stats;
     private Thread? _thread;
     private volatile bool _shutdown;
@@ -121,18 +122,25 @@ public sealed class ScanScheduler : IDisposable
     /// <summary>启动/恢复连续运行。首次调用创建扫描线程。</summary>
     public void Start()
     {
-        if (_state == ScanState.Running)
-            return;
-        _reanchor = true;
-        _state = ScanState.Running;
-        if (_thread == null)
+        lock (_lifecycleGate)
         {
-            _thread = new Thread(ScanLoop)
+            if (_state == ScanState.Running && _thread is { IsAlive: true })
+                return;
+
+            // Stop 后退出标志保持为 true，直到确实要创建新一代扫描线程。
+            // 这样不会出现旧线程尚未退出、Start 又把退出标志提前清掉的竞态。
+            _shutdown = false;
+            _reanchor = true;
+            _state = ScanState.Running;
+            if (_thread is not { IsAlive: true })
             {
-                Name = "rwvdcs-scan",
-                IsBackground = true,
-            };
-            _thread.Start();
+                _thread = new Thread(ScanLoop)
+                {
+                    Name = "rwvdcs-scan",
+                    IsBackground = true,
+                };
+                _thread.Start();
+            }
         }
     }
 
@@ -180,11 +188,27 @@ public sealed class ScanScheduler : IDisposable
     /// <summary>停止调度（线程退出）；可再 Start 重建。</summary>
     public void Stop()
     {
-        _state = ScanState.Stopped;
-        _shutdown = true;
-        _thread?.Join(2000);
-        _thread = null;
-        _shutdown = false;
+        lock (_lifecycleGate)
+        {
+            _state = ScanState.Stopped;
+            _shutdown = true;
+
+            var thread = _thread;
+            if (thread == null)
+                return;
+
+            // RuntimeHost 在 Stop 返回后会释放旧 DcsRuntime/Arena，因此这里必须确认
+            // 扫描线程已经完全退出。原先 Join(2000) 忽略超时结果，会让运行超过
+            // 2 秒的旧扫描线程继续访问已释放的 MemoryMappedFile，最终触发 AV。
+            if (ReferenceEquals(thread, Thread.CurrentThread))
+                throw new InvalidOperationException("不能在扫描线程自身上停止 ScanScheduler。");
+
+            thread.Join();
+            if (ReferenceEquals(_thread, thread))
+                _thread = null;
+
+            // 有意不在此处恢复 _shutdown；只有 Start 创建/恢复线程时才能清除。
+        }
     }
 
     public void ResetStats()

@@ -1465,6 +1465,7 @@ public sealed class ApiServer : IAsyncDisposable
             members.Add(BuildEngineeringMetadataMember("HighAlarmLimit3Value", point?.HighAlarmLimit3Value));
             members.Add(BuildEngineeringMetadataMember("Description", point?.Description));
             members.Add(BuildEngineeringMetadataMember("Unit", point?.Unit));
+            members.Add(BuildEngineeringMetadataMember("DataType", point?.DataType));
         }
 
         return members.ToArray();

@@ -27,6 +27,7 @@
   <Folder Name="/Tests/">
     <Project Path="Tests/RWVDCS.Benchmarks/RWVDCS.Benchmarks.csproj" />
     <Project Path="Tests/RWVDCS.Core.Tests/RWVDCS.Core.Tests.csproj" />
+    <Project Path="Tests/RWVDCS.Runtime.Tests/RWVDCS.Runtime.Tests.csproj" />
   </Folder>
   <Folder Name="/Tools/">
     <Project Path="Tools/RWVDCS.Tools.MdbDump/RWVDCS.Tools.MdbDump.csproj" />
