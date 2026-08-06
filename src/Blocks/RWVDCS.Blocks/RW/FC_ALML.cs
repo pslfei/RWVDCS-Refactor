@@ -21,6 +21,10 @@ namespace RWVDCS.Blocks.RW
         public LD Enable = new LD(QualityTypes.Good, false, false, false, 0, true);
 
         [PinType(PinTypes.Input)]
+        [PinDisplay("测点名")]
+        public LA TAG = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
+
+        [PinType(PinTypes.Input)]
         [PinDisplay("报警低低低限")]
         public LA LLL = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
 
@@ -52,10 +56,6 @@ namespace RWVDCS.Blocks.RW
         [PinDisplay("源端禁用状态: 禁用(1)/启用(0)")]
         public LA OUT = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
 
-        [PinType(PinTypes.Output)]
-        [PinDisplay("低低限报警等级")]
-        public LA LLLAl = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
-
         [PinType(PinTypes.Constant)]
         [PinDisplay("低低限报警等级")]
         public uint LLAl = 0;
@@ -75,6 +75,10 @@ namespace RWVDCS.Blocks.RW
         [PinType(PinTypes.Constant)]
         [PinDisplay("高高高限报警等级")]
         public uint HHHAl = 0;
+
+        [PinType(PinTypes.Constant)]
+        [PinDisplay("低低限报警等级")]
+        public uint LLLAl = 0;
 
         [PinType(PinTypes.Constant)]
         [PinDisplay("报警特征字")]
@@ -107,11 +111,6 @@ namespace RWVDCS.Blocks.RW
         [PinType(PinTypes.Constant)]
         [PinDisplay("通道号")]
         public uint Channel = 0;
-
-        [PinType(PinTypes.Constant)]
-        [PinDisplay("测点名")]
-        [MarshalAsAttribute(UnmanagedType.ByValArray, SizeConst = 50)]
-        public string TAG = "";
 
         [PinType(PinTypes.Constant)]
         [PinDisplay("品质传递")]
