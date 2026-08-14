@@ -7,7 +7,7 @@ namespace RWVDCS.Blocks.RW
 	{
 		protected override void Run(ICommand cmd) 
 		{
-			OUT[0] = X;
+			TAG[0] = X;
 		}
 	}
 }

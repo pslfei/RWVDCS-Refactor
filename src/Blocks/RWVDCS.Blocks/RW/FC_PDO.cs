@@ -31,7 +31,7 @@ namespace RWVDCS.Blocks.RW
 
         [PinType(PinTypes.Output)]
         [PinDisplay("输出")]
-        public LD OUT = new LD(QualityTypes.Good, false, false, false, 0, false);
+        public LD TAG = new LD(QualityTypes.Good, false, false, false, 0, false);
 
     }
 }
