@@ -5,7 +5,7 @@ using RWVDCS.Core.Types;
 namespace RWVDCS.Core.Tests.Types;
 
 /// <summary>
-/// 布局守卫：新类型的字节布局必须与方案 §2.2 记录的老系统 CLR 布局逐字段一致。
+/// 布局守卫：老系统字段前缀必须保持原 CLR 布局，新字段只能追加在结构末尾。
 /// 这些断言一旦失败，说明有人改了字段顺序/类型——工况/快照二进制会静默损坏。
 /// </summary>
 public class TypeLayoutTests
@@ -26,9 +26,10 @@ public class TypeLayoutTests
     }
 
     [Fact]
-    public void LA_layout_is_28_bytes()
+    public void LA_layout_preserves_legacy_prefix_and_appends_alarm_limits()
     {
-        Assert.Equal(28, Unsafe.SizeOf<LA>());
+        Assert.Equal(76, Unsafe.SizeOf<LA>());
+        Assert.Equal(LA.Size, Unsafe.SizeOf<LA>());
         Assert.Equal(0, (int)Marshal.OffsetOf<LA>("quality"));
         Assert.Equal(4, (int)Marshal.OffsetOf<LA>("istrace"));
         Assert.Equal(5, (int)Marshal.OffsetOf<LA>("isalarm"));
@@ -42,6 +43,12 @@ public class TypeLayoutTests
         Assert.Equal(16, (int)Marshal.OffsetOf<LA>("maxvalue"));
         Assert.Equal(20, (int)Marshal.OffsetOf<LA>("minvalue"));
         Assert.Equal(24, (int)Marshal.OffsetOf<LA>("buffer"));
+        Assert.Equal(28, (int)Marshal.OffsetOf<LA>("highAlarmLimit3Value"));
+        Assert.Equal(36, (int)Marshal.OffsetOf<LA>("highAlarmLimit2Value"));
+        Assert.Equal(44, (int)Marshal.OffsetOf<LA>("highAlarmLimit1Value"));
+        Assert.Equal(52, (int)Marshal.OffsetOf<LA>("lowAlarmLimit3Value"));
+        Assert.Equal(60, (int)Marshal.OffsetOf<LA>("lowAlarmLimit2Value"));
+        Assert.Equal(68, (int)Marshal.OffsetOf<LA>("lowAlarmLimit1Value"));
     }
 
     [Fact]

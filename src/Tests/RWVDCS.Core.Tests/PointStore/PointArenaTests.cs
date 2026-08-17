@@ -98,7 +98,7 @@ public class PointArenaTests : IDisposable
     public void Field_access_out_of_bounds_throws()
     {
         using var arena = PointArena.Create(SampleBuilder());
-        Assert.Throws<ArgumentOutOfRangeException>(() => arena.ReadField<float>(0, 28));
+        Assert.Throws<ArgumentOutOfRangeException>(() => arena.ReadField<float>(0, LA.Size));
         Assert.Throws<ArgumentOutOfRangeException>(() => arena.WriteField(1, 9, 1.0d));
     }
 

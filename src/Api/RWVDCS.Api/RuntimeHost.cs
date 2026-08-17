@@ -69,6 +69,8 @@ public sealed class RuntimeHost : IDisposable
     private DownloadPlan? _pendingPlan;
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> _pointMetadataByDpu =
         new Dictionary<string, IReadOnlyDictionary<string, PointModel>>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<int, ControllerModel> _controllerMetadataById =
+        new Dictionary<int, ControllerModel>();
 
     public LogBuffer Log { get; } = new();
     public ConditionStore Store { get; }
@@ -98,6 +100,19 @@ public sealed class RuntimeHost : IDisposable
         if (index.TryGetValue(dpuName, out var points) && points.TryGetValue(pointName, out point!))
             return true;
         point = null!;
+        return false;
+    }
+
+    /// <summary>按控制器数据库 ID 查询当前代的控制器地址。</summary>
+    public bool TryGetControllerAddress(int controllerId, out string address)
+    {
+        var index = _controllerMetadataById;
+        if (index.TryGetValue(controllerId, out var controller))
+        {
+            address = controller.Address;
+            return true;
+        }
+        address = string.Empty;
         return false;
     }
 
@@ -172,6 +187,7 @@ public sealed class RuntimeHost : IDisposable
         Runtime = newRuntime;
         PristineModel = pristine;
         _pointMetadataByDpu = BuildPointMetadataIndex(pristine);
+        _controllerMetadataById = BuildControllerMetadataIndex(pristine);
         MdbPath = mdbPath;
         Fingerprint = fingerprint;
         LoadedAtUtc = DateTime.UtcNow;
@@ -214,6 +230,14 @@ public sealed class RuntimeHost : IDisposable
         }
 
         return byDpu;
+    }
+
+    private static IReadOnlyDictionary<int, ControllerModel> BuildControllerMetadataIndex(EngineeringModel model)
+    {
+        var byId = new Dictionary<int, ControllerModel>(model.Controllers.Count);
+        foreach (var controller in model.Controllers)
+            byId.TryAdd(controller.Id, controller);
+        return byId;
     }
 
     private DcsRuntime RequireRuntime() => Runtime ?? throw new InvalidOperationException("尚未装载工程");

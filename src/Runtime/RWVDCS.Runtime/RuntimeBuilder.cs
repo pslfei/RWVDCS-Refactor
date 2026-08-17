@@ -174,7 +174,7 @@ public static class RuntimeBuilder
         {
             if (!seenNames.Add(name))
                 continue; // 老系统 rtd.New 失败被忽略（intermediateSid 未检查）
-            builder.AddRawSlot(name, WellKnownTypeIds.LA, LA.Size); // 全零 LA（老系统仅 New，不写默认值）
+            builder.AddRawSlot(name, WellKnownTypeIds.LA, LA.Size, BuildUnconfiguredLaInitBytes());
             plannedKinds.Add(PointKind.LA);
             report.IntermediatePointCount++;
         }
@@ -270,7 +270,7 @@ public static class RuntimeBuilder
     }
 
     /// <summary>
-    /// 点槽初始字节（对齐 Dpu.cs:1447-1477：仅写 buffer/MaxValue/MinValue，其余字段全零 = 类型默认）。
+    /// 点槽初始字节。旧字段对齐 Dpu.cs:1447-1477，并为 LA 注入工程报警限值。
     /// </summary>
     private static byte[] BuildPointInitBytes(PointModel p, PointKind kind)
     {
@@ -282,6 +282,12 @@ public static class RuntimeBuilder
                 MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaBufferOffset), (float)p.DefaultValue);
                 MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaMaxValueOffset), p.MaxValue);
                 MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaMinValueOffset), p.MinValue);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaHighAlarmLimit3ValueOffset), p.HighAlarmLimit3Value);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaHighAlarmLimit2ValueOffset), p.HighAlarmLimit2Value);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaHighAlarmLimit1ValueOffset), p.HighAlarmLimit1Value);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaLowAlarmLimit3ValueOffset), p.LowAlarmLimit3Value);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaLowAlarmLimit2ValueOffset), p.LowAlarmLimit2Value);
+                MemoryMarshal.Write(bytes.AsSpan((int)PointLayout.LaLowAlarmLimit1ValueOffset), p.LowAlarmLimit1Value);
                 return bytes;
             }
             case PointKind.LD:
@@ -297,6 +303,15 @@ public static class RuntimeBuilder
             default:
                 throw new ArgumentOutOfRangeException(nameof(kind));
         }
+    }
+
+    /// <summary>中间 LA 点没有工程报警配置，使用 NaN 让六级状态计算跳过全部限值。</summary>
+    private static byte[] BuildUnconfiguredLaInitBytes()
+    {
+        var bytes = new byte[LA.Size];
+        var value = new LA();
+        MemoryMarshal.Write(bytes.AsSpan(), in value);
+        return bytes;
     }
 
     // =================================================================

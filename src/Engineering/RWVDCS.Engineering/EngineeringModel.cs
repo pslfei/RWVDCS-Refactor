@@ -58,6 +58,8 @@ public sealed class ControllerModel
 /// <summary>点定义（对齐老系统 PointDetails 的有效字段）。</summary>
 public sealed class PointModel
 {
+    /// <summary>Cfg_VarSystem.ID。</summary>
+    public int ID { get; init; }
     public required string Name { get; init; }
     /// <summary>LA / LD / LP / LP32。</summary>
     public required string DataType { get; init; }
@@ -67,17 +69,29 @@ public sealed class PointModel
     public float MaxValue { get; init; }
     /// <summary>仅 LA 使用（写入 minvalue 字段）。</summary>
     public float MinValue { get; init; }
-    /// <summary>工程库配置的低报警一级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的低报警一级优先级。</summary>
+    public int LowAlarm1Priority { get; init; }
+    /// <summary>工程库配置的低报警二级优先级。</summary>
+    public int LowAlarm2Priority { get; init; }
+    /// <summary>工程库配置的低报警三级优先级。</summary>
+    public int LowAlarm3Priority { get; init; }
+    /// <summary>工程库配置的高报警一级优先级。</summary>
+    public int HighAlarm1Priority { get; init; }
+    /// <summary>工程库配置的高报警二级优先级。</summary>
+    public int HighAlarm2Priority { get; init; }
+    /// <summary>工程库配置的高报警三级优先级。</summary>
+    public int HighAlarm3Priority { get; init; }
+    /// <summary>工程库配置的低报警一级限值，LA 点构建时写入实时点结构。</summary>
     public double LowAlarmLimit1Value { get; init; }
-    /// <summary>工程库配置的低报警二级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的低报警二级限值，LA 点构建时写入实时点结构。</summary>
     public double LowAlarmLimit2Value { get; init; }
-    /// <summary>工程库配置的低报警三级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的低报警三级限值，LA 点构建时写入实时点结构。</summary>
     public double LowAlarmLimit3Value { get; init; }
-    /// <summary>工程库配置的高报警一级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的高报警一级限值，LA 点构建时写入实时点结构。</summary>
     public double HighAlarmLimit1Value { get; init; }
-    /// <summary>工程库配置的高报警二级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的高报警二级限值，LA 点构建时写入实时点结构。</summary>
     public double HighAlarmLimit2Value { get; init; }
-    /// <summary>工程库配置的高报警三级限值（只读元数据，不进入实时点结构）。</summary>
+    /// <summary>工程库配置的高报警三级限值，LA 点构建时写入实时点结构。</summary>
     public double HighAlarmLimit3Value { get; init; }
     public string? Unit { get; init; }
     public string? Description { get; init; }

@@ -44,6 +44,8 @@ public static class MdbEngineeringReader
         // 无 ORDER BY：必须保持 mdb 自然行序（见类注释，行序影响粘滞语义与命令顺序）
         var varsByCtrl = GroupBy(Query(conn,
             "SELECT ID, Name, DataType, DefaultValue, MinimumScale, MaximunScale, ForceValue, Unit, Description, " +
+            "LowAlarm1Priority, LowAlarm2Priority, LowAlarm3Priority, " +
+            "HighAlarm1Priority, HighAlarm2Priority, HighAlarm3Priority, " +
             "LowAlarmLimit1Value, LowAlarmLimit2Value, LowAlarmLimit3Value, " +
             "HighAlarmLimit1Value, HighAlarmLimit2Value, HighAlarmLimit3Value, Prj_Controller_ID FROM Cfg_VarSystem"),
             r => (int)r["Prj_Controller_ID"]);
@@ -100,8 +102,16 @@ public static class MdbEngineeringReader
 
         foreach (var row in rows)
         {
+            int id = Convert.ToInt32(row["ID"], CultureInfo.InvariantCulture);
             string name = Str(row["Name"]);
             string dataType = Str(row["DataType"]);
+
+            int lowAlarm1Priority = Convert.ToInt32(row["LowAlarm1Priority"], CultureInfo.InvariantCulture);
+            int lowAlarm2Priority = Convert.ToInt32(row["LowAlarm2Priority"], CultureInfo.InvariantCulture);
+            int lowAlarm3Priority = Convert.ToInt32(row["LowAlarm3Priority"], CultureInfo.InvariantCulture);
+            int highAlarm1Priority = Convert.ToInt32(row["HighAlarm1Priority"], CultureInfo.InvariantCulture);
+            int highAlarm2Priority = Convert.ToInt32(row["HighAlarm2Priority"], CultureInfo.InvariantCulture);
+            int highAlarm3Priority = Convert.ToInt32(row["HighAlarm3Priority"], CultureInfo.InvariantCulture);
 
             string dValue = Str(row["DefaultValue"]);
             if (!string.IsNullOrEmpty(dValue))
@@ -138,29 +148,41 @@ public static class MdbEngineeringReader
             {
                 "LA" => new PointModel
                 {
-                    Name = name, DataType = dataType, DefaultValue = fDefaultValue,
+                    ID = id, Name = name, DataType = dataType, DefaultValue = fDefaultValue,
                     MaxValue = maxValue, MinValue = minValue,
+                    LowAlarm1Priority = lowAlarm1Priority, LowAlarm2Priority = lowAlarm2Priority,
+                    LowAlarm3Priority = lowAlarm3Priority, HighAlarm1Priority = highAlarm1Priority,
+                    HighAlarm2Priority = highAlarm2Priority, HighAlarm3Priority = highAlarm3Priority,
                     LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
                     HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LD" => new PointModel
                 {
-                    Name = name, DataType = dataType, DefaultValue = bDefaultValue,
+                    ID = id, Name = name, DataType = dataType, DefaultValue = bDefaultValue,
+                    LowAlarm1Priority = lowAlarm1Priority, LowAlarm2Priority = lowAlarm2Priority,
+                    LowAlarm3Priority = lowAlarm3Priority, HighAlarm1Priority = highAlarm1Priority,
+                    HighAlarm2Priority = highAlarm2Priority, HighAlarm3Priority = highAlarm3Priority,
                     LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
                     HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LP" => new PointModel
                 {
-                    Name = name, DataType = dataType, DefaultValue = (short)0,
+                    ID = id, Name = name, DataType = dataType, DefaultValue = (short)0,
+                    LowAlarm1Priority = lowAlarm1Priority, LowAlarm2Priority = lowAlarm2Priority,
+                    LowAlarm3Priority = lowAlarm3Priority, HighAlarm1Priority = highAlarm1Priority,
+                    HighAlarm2Priority = highAlarm2Priority, HighAlarm3Priority = highAlarm3Priority,
                     LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
                     HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),
                 },
                 "LP32" => new PointModel
                 {
-                    Name = name, DataType = dataType, DefaultValue = 0L,
+                    ID = id, Name = name, DataType = dataType, DefaultValue = 0L,
+                    LowAlarm1Priority = lowAlarm1Priority, LowAlarm2Priority = lowAlarm2Priority,
+                    LowAlarm3Priority = lowAlarm3Priority, HighAlarm1Priority = highAlarm1Priority,
+                    HighAlarm2Priority = highAlarm2Priority, HighAlarm3Priority = highAlarm3Priority,
                     LowAlarmLimit1Value = lowAlarm1, LowAlarmLimit2Value = lowAlarm2, LowAlarmLimit3Value = lowAlarm3,
                     HighAlarmLimit1Value = highAlarm1, HighAlarmLimit2Value = highAlarm2, HighAlarmLimit3Value = highAlarm3,
                     Unit = Str(row["Unit"]), Description = Str(row["Description"]),

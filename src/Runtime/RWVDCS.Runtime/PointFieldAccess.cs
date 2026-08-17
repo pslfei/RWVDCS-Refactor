@@ -28,11 +28,25 @@ public static class PointFieldAccess
         {
             var list = new List<(string, uint, Type)>();
             foreach (var fi in type.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                // 六级报警限值是 LA 为计算 CurOverState 缓存的工程配置，不属于可订阅/可写的
+                // 普通实时字段。/api/value 继续从 PointModel 以工程元数据形式返回它们。
+                if (kind == PointKind.LA && IsLaAlarmLimitStorageField(fi.Name))
+                    continue;
                 list.Add((fi.Name, (uint)Marshal.OffsetOf(type, fi.Name), fi.FieldType));
+            }
             map[kind] = list;
         }
         return map;
     }
+
+    private static bool IsLaAlarmLimitStorageField(string fieldName) => fieldName is
+        "highAlarmLimit3Value" or
+        "highAlarmLimit2Value" or
+        "highAlarmLimit1Value" or
+        "lowAlarmLimit3Value" or
+        "lowAlarmLimit2Value" or
+        "lowAlarmLimit1Value";
 
     /// <summary>读全部子字段（枚举转 int 名，byte 布尔字段原样 0/1）。</summary>
     public static List<PointField> ReadAll(PointSlotRef slot)
@@ -47,14 +61,27 @@ public static class PointFieldAccess
             object value = Type.GetTypeCode(t) switch
             {
                 TypeCode.Single => slot.Arena.ReadField<float>(slot.Sid, offset),
+                TypeCode.Double => slot.Arena.ReadField<double>(slot.Sid, offset),
                 TypeCode.Byte => slot.Arena.ReadField<byte>(slot.Sid, offset),
                 TypeCode.UInt16 => slot.Arena.ReadField<ushort>(slot.Sid, offset),
                 TypeCode.UInt32 => slot.Arena.ReadField<uint>(slot.Sid, offset),
                 TypeCode.Int32 => slot.Arena.ReadField<int>(slot.Sid, offset),
                 _ => "?",
             };
+
+            // 未配置的 LA 报警限值使用 NaN；不把非有限数暴露给 JSON/兼容订阅层。
+            if (value is double d && double.IsNaN(d))
+                continue;
+
             result.Add(new PointField(name, type.IsEnum ? type.Name : t.Name, value));
         }
+
+        if (slot.Kind == PointKind.LA)
+        {
+            ref readonly LA la = ref slot.Arena.GetRef<LA>(slot.Sid);
+            result.Add(new PointField(nameof(LA.CurOverState), nameof(Int32), la.CurOverState));
+        }
+
         return result;
     }
 
@@ -66,6 +93,15 @@ public static class PointFieldAccess
         if (!slot.IsRealPoint || !Layouts.TryGetValue(slot.Kind, out var fields))
             return false;
 
+        if (slot.Kind == PointKind.LA
+            && fieldName.Equals(nameof(LA.CurOverState), StringComparison.OrdinalIgnoreCase))
+        {
+            ref readonly LA la = ref slot.Arena.GetRef<LA>(slot.Sid);
+            value = la.CurOverState;
+            fieldType = typeof(int);
+            return true;
+        }
+
         foreach (var (name, offset, type) in fields)
         {
             if (!string.Equals(name, fieldName, StringComparison.OrdinalIgnoreCase))
@@ -76,12 +112,21 @@ public static class PointFieldAccess
             value = Type.GetTypeCode(t) switch
             {
                 TypeCode.Single => slot.Arena.ReadField<float>(slot.Sid, offset),
+                TypeCode.Double => slot.Arena.ReadField<double>(slot.Sid, offset),
                 TypeCode.Byte => slot.Arena.ReadField<byte>(slot.Sid, offset),
                 TypeCode.UInt16 => slot.Arena.ReadField<ushort>(slot.Sid, offset),
                 TypeCode.UInt32 => slot.Arena.ReadField<uint>(slot.Sid, offset),
                 TypeCode.Int32 => slot.Arena.ReadField<int>(slot.Sid, offset),
                 _ => null,
             };
+
+            if (value is double d && double.IsNaN(d))
+            {
+                value = null;
+                fieldType = null;
+                return false;
+            }
+
             return value != null;
         }
         return false;
@@ -105,6 +150,9 @@ public static class PointFieldAccess
                 {
                     case TypeCode.Single:
                         slot.Arena.WriteField(slot.Sid, offset, Convert.ToSingle(value, CultureInfo.InvariantCulture));
+                        return true;
+                    case TypeCode.Double:
+                        slot.Arena.WriteField(slot.Sid, offset, Convert.ToDouble(value, CultureInfo.InvariantCulture));
                         return true;
                     case TypeCode.Byte:
                         byte b = value is bool flag ? (byte)(flag ? 1 : 0)
@@ -148,6 +196,9 @@ public static class PointFieldAccess
                 {
                     case TypeCode.Single:
                         slot.Arena.WriteField(slot.Sid, offset, float.Parse(value, CultureInfo.InvariantCulture));
+                        return true;
+                    case TypeCode.Double:
+                        slot.Arena.WriteField(slot.Sid, offset, double.Parse(value, CultureInfo.InvariantCulture));
                         return true;
                     case TypeCode.Byte:
                         slot.Arena.WriteField(slot.Sid, offset, ParseByteish(value));

@@ -15,7 +15,7 @@ const uint LaBufferOffset = 24; // LA.buffer 字段偏移（布局测试守卫�
 string tempDir = Path.Combine(Path.GetTempPath(), "rwvdcs-bench");
 Directory.CreateDirectory(tempDir);
 
-Console.WriteLine($"RWVDCS.Next PoC 基准  |  点数 = {PointCount:N0} (LA, 28B/点)  |  {DateTime.Now:HH:mm:ss}");
+Console.WriteLine($"RWVDCS.Next PoC 基准  |  点数 = {PointCount:N0} (LA, {LA.Size}B/点)  |  {DateTime.Now:HH:mm:ss}");
 Console.WriteLine(new string('-', 78));
 
 // ---------- 构建 1M 点 Arena ----------

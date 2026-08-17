@@ -174,6 +174,95 @@ public class PointTypeSemanticsTests
         Assert.Null(la.GetMemberValue("Buffer"));
     }
 
+    [Fact]
+    public void LA_CurOverState_computes_six_level_alarm_state_from_buffer()
+    {
+        var la = CreateAlarmConfiguredLa();
+
+        la.Value = 95f;
+        Assert.Equal(6, la.CurOverState);
+
+        la.Value = 85f;
+        Assert.Equal(1, la.CurOverState);
+
+        la.Value = 75f;
+        Assert.Equal(2, la.CurOverState);
+
+        la.Value = 0f;
+        Assert.Equal(3, la.CurOverState);
+
+        la.Value = -75f;
+        Assert.Equal(4, la.CurOverState);
+
+        la.Value = -85f;
+        Assert.Equal(5, la.CurOverState);
+
+        la.Value = -95f;
+        Assert.Equal(7, la.CurOverState);
+    }
+
+    [Fact]
+    public void LA_CurOverState_includes_boundaries_and_prioritizes_severity()
+    {
+        var la = CreateAlarmConfiguredLa();
+
+        la.Value = 90f;
+        Assert.Equal(6, la.CurOverState);
+
+        la.Value = 80f;
+        Assert.Equal(1, la.CurOverState);
+
+        la.Value = 70f;
+        Assert.Equal(2, la.CurOverState);
+
+        la.Value = -70f;
+        Assert.Equal(4, la.CurOverState);
+
+        la.Value = -80f;
+        Assert.Equal(5, la.CurOverState);
+
+        la.Value = -90f;
+        Assert.Equal(7, la.CurOverState);
+    }
+
+    [Fact]
+    public void LA_unconfigured_limits_are_skipped_and_member_access_exposes_state()
+    {
+        var la = new LA(QualityTypes.Good, false, false, false, false, false,
+            1000f, -1000f, 0f, 0, 500f);
+
+        Assert.True(double.IsNaN(la.HighAlarmLimit3Value));
+        Assert.Equal(3, la.CurOverState);
+
+        la.SetMemberValue(400d, "HighAlarmLimit1Value");
+        Assert.Equal(400d, la.GetMemberValue("highalarmlimit1value"));
+        Assert.Equal(2, la.GetMemberValue("curoverstate"));
+
+        la.Value = float.NaN;
+        Assert.Equal(3, la.CurOverState);
+    }
+
+    private static LA CreateAlarmConfiguredLa() => new(
+        QualityTypes.Good,
+        isTrace: false,
+        maxReached: false,
+        minReached: false,
+        isHighalarm: false,
+        isLowalarm: false,
+        maxValue: 1000f,
+        minValue: -1000f,
+        forceValue: 0f,
+        isForced: 0,
+        value: 0f)
+    {
+        HighAlarmLimit3Value = 90d,
+        HighAlarmLimit2Value = 80d,
+        HighAlarmLimit1Value = 70d,
+        LowAlarmLimit3Value = -90d,
+        LowAlarmLimit2Value = -80d,
+        LowAlarmLimit1Value = -70d,
+    };
+
     // ---------- LP ----------
 
     [Fact]

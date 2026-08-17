@@ -5,6 +5,7 @@ public enum DiffKind
 {
     ControllerAdded,
     ControllerRemoved,
+    ControllerChanged,
     PointAdded,
     PointRemoved,
     PointChanged,       // 类型/默认值/量程变化
@@ -41,6 +42,7 @@ public sealed class ModelDiffReport
     public int BlocksParamChanged => Count(DiffKind.BlockParamChanged);
     public int ControllersAdded => Count(DiffKind.ControllerAdded);
     public int ControllersRemoved => Count(DiffKind.ControllerRemoved);
+    public int ControllersChanged => Count(DiffKind.ControllerChanged);
 
     public bool IsEmpty => Entries.Count == 0;
 
@@ -72,6 +74,14 @@ public static class ModelDiff
         {
             if (!newCtrls.TryGetValue(name, out var newC))
                 continue;
+            var controllerChanges = new List<string>();
+            if (oldC.Id != newC.Id)
+                controllerChanges.Add($"ID {oldC.Id}→{newC.Id}");
+            if (!string.Equals(oldC.Address, newC.Address, StringComparison.Ordinal))
+                controllerChanges.Add($"地址 {oldC.Address}→{newC.Address}");
+            if (controllerChanges.Count > 0)
+                report.Entries.Add(new DiffEntry(DiffKind.ControllerChanged, name, name,
+                    string.Join("；", controllerChanges)));
             ComparePoints(oldC, newC, report);
             CompareBlocks(oldC, newC, report);
         }
@@ -101,12 +111,26 @@ public static class ModelDiff
             }
 
             var changes = new List<string>();
+            if (op.ID != np.ID)
+                changes.Add($"ID {op.ID}→{np.ID}");
             if (ProjectFingerprint.FormatValue(op.DefaultValue) != ProjectFingerprint.FormatValue(np.DefaultValue))
                 changes.Add($"默认值 {ProjectFingerprint.FormatValue(op.DefaultValue)}→{ProjectFingerprint.FormatValue(np.DefaultValue)}");
             if (op.MaxValue != np.MaxValue)
                 changes.Add($"量程上限 {op.MaxValue}→{np.MaxValue}");
             if (op.MinValue != np.MinValue)
                 changes.Add($"量程下限 {op.MinValue}→{np.MinValue}");
+            if (op.LowAlarm1Priority != np.LowAlarm1Priority)
+                changes.Add($"低报警一级优先级 {op.LowAlarm1Priority}→{np.LowAlarm1Priority}");
+            if (op.LowAlarm2Priority != np.LowAlarm2Priority)
+                changes.Add($"低报警二级优先级 {op.LowAlarm2Priority}→{np.LowAlarm2Priority}");
+            if (op.LowAlarm3Priority != np.LowAlarm3Priority)
+                changes.Add($"低报警三级优先级 {op.LowAlarm3Priority}→{np.LowAlarm3Priority}");
+            if (op.HighAlarm1Priority != np.HighAlarm1Priority)
+                changes.Add($"高报警一级优先级 {op.HighAlarm1Priority}→{np.HighAlarm1Priority}");
+            if (op.HighAlarm2Priority != np.HighAlarm2Priority)
+                changes.Add($"高报警二级优先级 {op.HighAlarm2Priority}→{np.HighAlarm2Priority}");
+            if (op.HighAlarm3Priority != np.HighAlarm3Priority)
+                changes.Add($"高报警三级优先级 {op.HighAlarm3Priority}→{np.HighAlarm3Priority}");
             if (op.LowAlarmLimit1Value != np.LowAlarmLimit1Value)
                 changes.Add($"低报警一级限值 {op.LowAlarmLimit1Value}→{np.LowAlarmLimit1Value}");
             if (op.LowAlarmLimit2Value != np.LowAlarmLimit2Value)

@@ -32,11 +32,18 @@ public static class ProjectFingerprint
                 w.Write(c.Points.Count);
                 foreach (var p in c.Points)
                 {
+                    w.Write(p.ID);
                     w.Write(p.Name);
                     w.Write(p.DataType);
                     w.Write(FormatValue(p.DefaultValue));
                     w.Write(p.MaxValue);
                     w.Write(p.MinValue);
+                    w.Write(p.LowAlarm1Priority);
+                    w.Write(p.LowAlarm2Priority);
+                    w.Write(p.LowAlarm3Priority);
+                    w.Write(p.HighAlarm1Priority);
+                    w.Write(p.HighAlarm2Priority);
+                    w.Write(p.HighAlarm3Priority);
                     w.Write(p.LowAlarmLimit1Value);
                     w.Write(p.LowAlarmLimit2Value);
                     w.Write(p.LowAlarmLimit3Value);

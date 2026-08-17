@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace RWVDCS.Core.Types;
 
 /// <summary>
-/// 模拟量点。语义与老系统 DCSType.LA 逐字段对齐；布局固定 28 字节。
+/// 模拟量点。前 28 字节与老系统 DCSType.LA 逐字段对齐，末尾追加六级工程报警限值。
 /// </summary>
 /// <remarks>
 /// 老系统的关键副作用忠实保留：
@@ -16,7 +16,7 @@ namespace RWVDCS.Core.Types;
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
 public struct LA : IValuable, IPointOperation
 {
-    // 布局与老系统 CLR 布局一致（28B）：
+    // 前 28B 布局与老系统 CLR 布局一致：
     // quality(4) istrace(1) isalarm(1) forcevalue(4) isforced(1)
     // maxreached(1) minreached(1) ishighalarm(1) islowalarm(1) isConnected(1)
     // maxvalue(4) minvalue(4) buffer(4)
@@ -33,8 +33,27 @@ public struct LA : IValuable, IPointOperation
     private float maxvalue;
     private float minvalue;
     private float buffer;
+    // 新字段只允许追加在旧结构末尾，避免改变老字段（尤其 buffer）的偏移。
+    private double highAlarmLimit3Value;
+    private double highAlarmLimit2Value;
+    private double highAlarmLimit1Value;
+    private double lowAlarmLimit3Value;
+    private double lowAlarmLimit2Value;
+    private double lowAlarmLimit1Value;
 
-    public const int Size = 28;
+    public const int Size = 76;
+
+    /// <summary>无工程报警配置的 LA；NaN 表示对应限值未配置。</summary>
+    public LA()
+    {
+        this = default;
+        highAlarmLimit3Value = double.NaN;
+        highAlarmLimit2Value = double.NaN;
+        highAlarmLimit1Value = double.NaN;
+        lowAlarmLimit3Value = double.NaN;
+        lowAlarmLimit2Value = double.NaN;
+        lowAlarmLimit1Value = double.NaN;
+    }
 
     public LA(QualityTypes quality, bool isTrace, bool maxReached, bool minReached,
         bool isHighalarm, bool isLowalarm, float maxValue, float minValue,
@@ -53,6 +72,12 @@ public struct LA : IValuable, IPointOperation
         maxvalue = maxValue;
         minvalue = minValue;
         isConnected = 0;
+        highAlarmLimit3Value = double.NaN;
+        highAlarmLimit2Value = double.NaN;
+        highAlarmLimit1Value = double.NaN;
+        lowAlarmLimit3Value = double.NaN;
+        lowAlarmLimit2Value = double.NaN;
+        lowAlarmLimit1Value = double.NaN;
     }
 
     private static byte ToByte(bool b) => b ? (byte)1 : (byte)0;
@@ -151,6 +176,76 @@ public struct LA : IValuable, IPointOperation
     {
         readonly get => minvalue;
         set => minvalue = value;
+    }
+
+    /// <summary>高报警三级限值（HHH）；NaN 表示未配置。</summary>
+    public double HighAlarmLimit3Value
+    {
+        readonly get => highAlarmLimit3Value;
+        set => highAlarmLimit3Value = value;
+    }
+
+    /// <summary>高报警二级限值（HH）；NaN 表示未配置。</summary>
+    public double HighAlarmLimit2Value
+    {
+        readonly get => highAlarmLimit2Value;
+        set => highAlarmLimit2Value = value;
+    }
+
+    /// <summary>高报警一级限值（H）；NaN 表示未配置。</summary>
+    public double HighAlarmLimit1Value
+    {
+        readonly get => highAlarmLimit1Value;
+        set => highAlarmLimit1Value = value;
+    }
+
+    /// <summary>低报警三级限值（LLL）；NaN 表示未配置。</summary>
+    public double LowAlarmLimit3Value
+    {
+        readonly get => lowAlarmLimit3Value;
+        set => lowAlarmLimit3Value = value;
+    }
+
+    /// <summary>低报警二级限值（LL）；NaN 表示未配置。</summary>
+    public double LowAlarmLimit2Value
+    {
+        readonly get => lowAlarmLimit2Value;
+        set => lowAlarmLimit2Value = value;
+    }
+
+    /// <summary>低报警一级限值（L）；NaN 表示未配置。</summary>
+    public double LowAlarmLimit1Value
+    {
+        readonly get => lowAlarmLimit1Value;
+        set => lowAlarmLimit1Value = value;
+    }
+
+    /// <summary>
+    /// 当前六级越限状态：HHH=6、HH=1、H=2、正常=3、L=4、LL=5、LLL=7。
+    /// 每次读取都基于实时 buffer 计算，确保裸写实时值后状态不会过期。
+    /// </summary>
+    public readonly int CurOverState => ComputeCurOverState();
+
+    private readonly int ComputeCurOverState()
+    {
+        if (float.IsNaN(buffer))
+            return 3;
+
+        if (!double.IsNaN(highAlarmLimit3Value) && buffer >= highAlarmLimit3Value)
+            return 6;
+        if (!double.IsNaN(highAlarmLimit2Value) && buffer >= highAlarmLimit2Value)
+            return 1;
+        if (!double.IsNaN(highAlarmLimit1Value) && buffer >= highAlarmLimit1Value)
+            return 2;
+
+        if (!double.IsNaN(lowAlarmLimit3Value) && buffer <= lowAlarmLimit3Value)
+            return 7;
+        if (!double.IsNaN(lowAlarmLimit2Value) && buffer <= lowAlarmLimit2Value)
+            return 5;
+        if (!double.IsNaN(lowAlarmLimit1Value) && buffer <= lowAlarmLimit1Value)
+            return 4;
+
+        return 3;
     }
 
     /// <summary>
@@ -279,6 +374,24 @@ public struct LA : IValuable, IPointOperation
             case "minreached":
                 MinReached = (bool)value;
                 break;
+            case "highalarmlimit3value":
+                HighAlarmLimit3Value = Convert.ToDouble(value);
+                break;
+            case "highalarmlimit2value":
+                HighAlarmLimit2Value = Convert.ToDouble(value);
+                break;
+            case "highalarmlimit1value":
+                HighAlarmLimit1Value = Convert.ToDouble(value);
+                break;
+            case "lowalarmlimit3value":
+                LowAlarmLimit3Value = Convert.ToDouble(value);
+                break;
+            case "lowalarmlimit2value":
+                LowAlarmLimit2Value = Convert.ToDouble(value);
+                break;
+            case "lowalarmlimit1value":
+                LowAlarmLimit1Value = Convert.ToDouble(value);
+                break;
         }
     }
 
@@ -302,6 +415,13 @@ public struct LA : IValuable, IPointOperation
             "islowalarm" => islowalarm != 0,
             "maxreached" => maxreached != 0,
             "minreached" => minreached != 0,
+            "highalarmlimit3value" => highAlarmLimit3Value,
+            "highalarmlimit2value" => highAlarmLimit2Value,
+            "highalarmlimit1value" => highAlarmLimit1Value,
+            "lowalarmlimit3value" => lowAlarmLimit3Value,
+            "lowalarmlimit2value" => lowAlarmLimit2Value,
+            "lowalarmlimit1value" => lowAlarmLimit1Value,
+            "curoverstate" => CurOverState,
             _ => null,
         };
     }

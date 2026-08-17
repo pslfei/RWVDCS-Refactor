@@ -22,7 +22,7 @@ namespace RWVDCS.RemotingAdapter
             Console.OutputEncoding = Encoding.UTF8;
 
             int port = 8002;                              // 老 Simulator 默认端口
-            string api = "http://localhost:8090";
+            string api = "http://localhost:5100";
             int pollMs = 200;                             // 老系统默认扫描周期同款
             int timeoutSeconds = 60;
             int requestTimeoutMs = 3000;
@@ -44,7 +44,7 @@ namespace RWVDCS.RemotingAdapter
                     case "--event-pipe": eventPipe = args[++i]; break;
                     case "-h":
                     case "--help":
-                        Console.WriteLine("用法: rwvdcs-remoting-adapter [--port 8002] [--transport pipe|rest] [--request-pipe NAME] [--event-pipe NAME] [--request-timeout-ms 3000] [--api http://localhost:8090] [--poll 200] [--timeout 60]");
+                        Console.WriteLine("用法: rwvdcs-remoting-adapter [--port 8002] [--transport pipe|rest] [--request-pipe NAME] [--event-pipe NAME] [--request-timeout-ms 3000] [--api http://localhost:5100] [--poll 200] [--timeout 60]");
                         return 0;
                 }
             }

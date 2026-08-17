@@ -1071,6 +1071,7 @@ public sealed class ApiServer : IAsyncDisposable
                     blocksParamChanged = plan.Diff.BlocksParamChanged,
                     controllersAdded = plan.Diff.ControllersAdded,
                     controllersRemoved = plan.Diff.ControllersRemoved,
+                    controllersChanged = plan.Diff.ControllersChanged,
                     destructive = plan.Diff.HasDestructiveChanges,
                 },
                 entries = plan.Diff.Entries.Take(500).Select(e => new
@@ -1457,6 +1458,15 @@ public sealed class ApiServer : IAsyncDisposable
         if (includeEngineeringMetadata)
         {
             PointModel? point = _host.TryGetPointModel(dpu.Name, pointName, out var model) ? model : null;
+            string? dpuNo = _host.TryGetControllerAddress(dpu.ControllerId, out string address) ? address : null;
+            members.Add(BuildEngineeringMetadataMember("ID", point?.ID));
+            members.Add(BuildEngineeringMetadataMember("LowAlarm1Priority", point?.LowAlarm1Priority));
+            members.Add(BuildEngineeringMetadataMember("LowAlarm2Priority", point?.LowAlarm2Priority));
+            members.Add(BuildEngineeringMetadataMember("LowAlarm3Priority", point?.LowAlarm3Priority));
+            members.Add(BuildEngineeringMetadataMember("HighAlarm1Priority", point?.HighAlarm1Priority));
+            members.Add(BuildEngineeringMetadataMember("HighAlarm2Priority", point?.HighAlarm2Priority));
+            members.Add(BuildEngineeringMetadataMember("HighAlarm3Priority", point?.HighAlarm3Priority));
+            members.Add(BuildEngineeringMetadataMember("dpuNO", dpuNo));
             members.Add(BuildEngineeringMetadataMember("LowAlarmLimit1Value", point?.LowAlarmLimit1Value));
             members.Add(BuildEngineeringMetadataMember("LowAlarmLimit2Value", point?.LowAlarmLimit2Value));
             members.Add(BuildEngineeringMetadataMember("LowAlarmLimit3Value", point?.LowAlarmLimit3Value));

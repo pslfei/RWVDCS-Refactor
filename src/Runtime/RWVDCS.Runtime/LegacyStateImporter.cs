@@ -162,6 +162,9 @@ public static class LegacyStateImporter
                 case TypeCode.Single:
                     slot.Arena.WriteField(slot.Sid, f.Offset, float.Parse(value, CultureInfo.InvariantCulture));
                     break;
+                case TypeCode.Double:
+                    slot.Arena.WriteField(slot.Sid, f.Offset, double.Parse(value, CultureInfo.InvariantCulture));
+                    break;
                 case TypeCode.Byte:
                     slot.Arena.WriteField(slot.Sid, f.Offset, byte.Parse(value, CultureInfo.InvariantCulture));
                     break;

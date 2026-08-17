@@ -73,12 +73,12 @@ internal sealed class PointBufferValueAccessor(PointSlotRef slot) : IRealtimeVal
 internal sealed class PointFieldValueAccessor(PointSlotRef slot, string field, Type fieldType) : IRealtimeValueAccessor
 {
     public CompatValueKind ValueKind { get; } = RealtimeValueService.ToValueKind(fieldType);
-    public bool Writable => true;
+    public bool Writable { get; } = !field.Equals(nameof(LA.CurOverState), StringComparison.OrdinalIgnoreCase);
 
     public object? Read()
         => PointFieldAccess.TryRead(slot, field, out object? value, out _) ? value : null;
 
-    public bool Write(object? value) => PointFieldAccess.WriteObject(slot, field, value);
+    public bool Write(object? value) => Writable && PointFieldAccess.WriteObject(slot, field, value);
 }
 
 internal sealed class BlockFieldValueAccessor(BlockCommand command, FieldInfo field) : IRealtimeValueAccessor

@@ -30,6 +30,12 @@ public static class PointLayout
 
     public static readonly uint LaMaxValueOffset = (uint)Marshal.OffsetOf<LA>("maxvalue");
     public static readonly uint LaMinValueOffset = (uint)Marshal.OffsetOf<LA>("minvalue");
+    public static readonly uint LaHighAlarmLimit3ValueOffset = (uint)Marshal.OffsetOf<LA>("highAlarmLimit3Value");
+    public static readonly uint LaHighAlarmLimit2ValueOffset = (uint)Marshal.OffsetOf<LA>("highAlarmLimit2Value");
+    public static readonly uint LaHighAlarmLimit1ValueOffset = (uint)Marshal.OffsetOf<LA>("highAlarmLimit1Value");
+    public static readonly uint LaLowAlarmLimit3ValueOffset = (uint)Marshal.OffsetOf<LA>("lowAlarmLimit3Value");
+    public static readonly uint LaLowAlarmLimit2ValueOffset = (uint)Marshal.OffsetOf<LA>("lowAlarmLimit2Value");
+    public static readonly uint LaLowAlarmLimit1ValueOffset = (uint)Marshal.OffsetOf<LA>("lowAlarmLimit1Value");
 
     public static PointKind KindFromDataType(string dataType) => dataType switch
     {
