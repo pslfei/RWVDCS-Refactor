@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text.Json;
@@ -12,7 +13,7 @@ namespace RWVDCS.Runtime.Tests;
 public sealed class ApiValueContractTests
 {
     [Fact]
-    public async Task Value_endpoint_returns_single_computed_over_state_for_la_points()
+    public async Task Value_endpoints_return_engineering_metadata_and_compatibility_status_fields()
     {
         string dataDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -51,6 +52,26 @@ public sealed class ApiValueContractTests
             Assert.DoesNotContain(
                 values[2].GetProperty("members").EnumerateArray(),
                 member => member.GetProperty("name").GetString() == "CurOverState");
+
+            string[] requestedFields =
+            [
+                "AI001.CurOverState",
+                "AI001.cUrOvErStAtE",
+                "AI001.dataQuality",
+                "AI001.DATAQUALITY",
+            ];
+            using HttpResponseMessage compatResponse = await client.PostAsJsonAsync(
+                "/api/point/GetPointValues",
+                requestedFields);
+
+            Assert.Equal(HttpStatusCode.OK, compatResponse.StatusCode);
+            using JsonDocument compatJson = JsonDocument.Parse(
+                await compatResponse.Content.ReadAsStreamAsync());
+            JsonElement compatValues = compatJson.RootElement;
+            Assert.Equal("6", compatValues.GetProperty("AI001.CurOverState").GetString());
+            Assert.Equal("6", compatValues.GetProperty("AI001.cUrOvErStAtE").GetString());
+            Assert.Equal("1", compatValues.GetProperty("AI001.dataQuality").GetString());
+            Assert.Equal("1", compatValues.GetProperty("AI001.DATAQUALITY").GetString());
         }
         finally
         {

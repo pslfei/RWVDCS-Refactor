@@ -702,6 +702,8 @@ public sealed class ApiServer : IAsyncDisposable
                 result[echoKey] = field.ToLowerInvariant() switch
                 {
                     "value" => FormatCompatString(ReadCompatPointValue(rt, pointName)),
+                    "curoverstate" => FormatCompatString(ReadCompatPointField(rt, pointName, nameof(LA.CurOverState))),
+                    "dataquality" => "0",
                     "eu" or "unit" => FindPointModel(pointName)?.Unit,
                     "desc" or "description" => FindPointModel(pointName)?.Description,
                     "minad" => FormatCompatString(FindPointModel(pointName)?.MinValue),
@@ -1679,9 +1681,33 @@ public sealed class ApiServer : IAsyncDisposable
 
     private object? ReadCompatPointValue(DcsRuntime rt, string pointName)
     {
-        return rt.TryGetSlot(pointName, out var slot) && slot.IsRealPoint
+        return TryFindCompatPointSlot(rt, pointName, out var slot)
             ? slot.ReadBoxedBuffer()
-            : FindPoint(rt, pointName)?.Slot.ReadBoxedBuffer();
+            : null;
+    }
+
+    private object? ReadCompatPointField(DcsRuntime rt, string pointName, string fieldName)
+    {
+        return TryFindCompatPointSlot(rt, pointName, out var slot)
+               && PointFieldAccess.TryRead(slot, fieldName, out object? value, out _)
+            ? value
+            : null;
+    }
+
+    private bool TryFindCompatPointSlot(DcsRuntime rt, string pointName, out PointSlotRef slot)
+    {
+        if (rt.TryGetSlot(pointName, out slot) && slot.IsRealPoint)
+            return true;
+
+        var found = FindPoint(rt, pointName);
+        if (found != null)
+        {
+            slot = found.Value.Slot;
+            return true;
+        }
+
+        slot = default;
+        return false;
     }
 
     private PointModel? FindPointModel(string pointName)
