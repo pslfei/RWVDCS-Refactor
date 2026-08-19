@@ -53,6 +53,28 @@ public sealed class DownloadPlan
 }
 
 /// <summary>
+/// 当前代 Runtime 的请求级生命周期租约。租约释放前，宿主不会销毁其关联的 Arena。
+/// </summary>
+public sealed class RuntimeReadLease : IDisposable
+{
+    private RuntimeHost? _owner;
+
+    internal RuntimeReadLease(RuntimeHost owner, DcsRuntime runtime)
+    {
+        _owner = owner;
+        Runtime = runtime;
+    }
+
+    public DcsRuntime Runtime { get; }
+
+    public void Dispose()
+    {
+        RuntimeHost? owner = Interlocked.Exchange(ref _owner, null);
+        owner?.ReleaseRuntimeLease();
+    }
+}
+
+/// <summary>
 /// 运行时宿主编排层：项目装载、运行控制、工况/快照、在线下装、热更、
 /// 交叉引用、日志——Web API 与 REPL 共用的唯一入口。
 /// </summary>
@@ -65,7 +87,11 @@ public sealed class RuntimeHost : IDisposable
     private readonly RuntimeHostOptions _options;
     private readonly BlockCatalog _catalog;
     private readonly SemaphoreSlim _structureLock = new(1, 1);
+    private readonly object _runtimeLeaseGate = new();
     private readonly List<VersionEntry> _versions = [];
+    private int _activeRuntimeLeases;
+    private bool _runtimeRetiring;
+    private bool _disposed;
     private DownloadPlan? _pendingPlan;
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> _pointMetadataByDpu =
         new Dictionary<string, IReadOnlyDictionary<string, PointModel>>(StringComparer.OrdinalIgnoreCase);
@@ -92,6 +118,42 @@ public sealed class RuntimeHost : IDisposable
     public RuntimeBuildReport? BuildReport { get; private set; }
 
     public bool ProjectLoaded => Runtime != null;
+
+    /// <summary>
+    /// 获取当前代 Runtime 的请求级租约。工程换代和宿主关闭会等待所有租约释放后，
+    /// 才销毁旧 Runtime/Arena。
+    /// </summary>
+    public RuntimeReadLease AcquireRuntimeLease()
+        => TryAcquireRuntimeLease() ?? throw new InvalidOperationException("尚未装载工程");
+
+    /// <summary>尝试获取当前代 Runtime 租约；尚未装载工程或宿主已关闭时返回 null。</summary>
+    public RuntimeReadLease? TryAcquireRuntimeLease()
+    {
+        lock (_runtimeLeaseGate)
+        {
+            while (_runtimeRetiring && !_disposed)
+                Monitor.Wait(_runtimeLeaseGate);
+
+            if (_disposed || Runtime == null)
+                return null;
+
+            _activeRuntimeLeases++;
+            return new RuntimeReadLease(this, Runtime);
+        }
+    }
+
+    internal void ReleaseRuntimeLease()
+    {
+        lock (_runtimeLeaseGate)
+        {
+            if (_activeRuntimeLeases <= 0)
+                throw new InvalidOperationException("Runtime 生命周期租约计数失衡");
+
+            _activeRuntimeLeases--;
+            if (_activeRuntimeLeases == 0)
+                Monitor.PulseAll(_runtimeLeaseGate);
+        }
+    }
 
     /// <summary>按 DPU/点名 O(1) 查询当前代的只读工程元数据。</summary>
     public bool TryGetPointModel(string dpuName, string pointName, out PointModel point)
@@ -178,41 +240,69 @@ public sealed class RuntimeHost : IDisposable
     {
         RuntimeChanging?.Invoke();
 
-        // 停旧
-        Scheduler?.Stop();
-        History?.Dispose();
-        var oldRuntime = Runtime;
-
-        // 立新
-        Runtime = newRuntime;
-        PristineModel = pristine;
-        _pointMetadataByDpu = BuildPointMetadataIndex(pristine);
-        _controllerMetadataById = BuildControllerMetadataIndex(pristine);
-        MdbPath = mdbPath;
-        Fingerprint = fingerprint;
-        LoadedAtUtc = DateTime.UtcNow;
-        BuildReport = newRuntime.Report;
-
-        Scheduler = new ScanScheduler(newRuntime);
-        Xref = new XrefIndex(newRuntime);
-        Swapper = new BlockHotSwapper(newRuntime, buildModel);
-        History = _options.EnableHistory
-            ? new HistoryRecorder(newRuntime, new HistoryOptions
+        EnterRuntimeRetirement();
+        try
+        {
+            if (_disposed)
             {
-                Directory = Path.Combine(_options.DataDirectory, "history"),
-            })
-            : null;
-        if (History != null)
-            Scheduler.AfterDpuStep = History.OnDpuStep;
+                newRuntime.Dispose();
+                throw new ObjectDisposedException(nameof(RuntimeHost));
+            }
 
-        oldRuntime?.Dispose();
+            // 进入退休屏障后，不再有请求持有旧 PointSlotRef；此时停止扫描并释放旧 Arena。
+            Scheduler?.Stop();
+            History?.Dispose();
+            var oldRuntime = Runtime;
 
-        if (restoreState == ScanState.Running)
-            Scheduler.Start();
-        else if (restoreState == ScanState.Paused)
-            Scheduler.Pause(); // 保留暂停态：下装/换代后单步继续有效
+            Runtime = newRuntime;
+            PristineModel = pristine;
+            _pointMetadataByDpu = BuildPointMetadataIndex(pristine);
+            _controllerMetadataById = BuildControllerMetadataIndex(pristine);
+            MdbPath = mdbPath;
+            Fingerprint = fingerprint;
+            LoadedAtUtc = DateTime.UtcNow;
+            BuildReport = newRuntime.Report;
+
+            Scheduler = new ScanScheduler(newRuntime);
+            Xref = new XrefIndex(newRuntime);
+            Swapper = new BlockHotSwapper(newRuntime, buildModel);
+            History = _options.EnableHistory
+                ? new HistoryRecorder(newRuntime, new HistoryOptions
+                {
+                    Directory = Path.Combine(_options.DataDirectory, "history"),
+                })
+                : null;
+            if (History != null)
+                Scheduler.AfterDpuStep = History.OnDpuStep;
+
+            oldRuntime?.Dispose();
+
+            if (restoreState == ScanState.Running)
+                Scheduler.Start();
+            else if (restoreState == ScanState.Paused)
+                Scheduler.Pause(); // 保留暂停态：下装/换代后单步继续有效
+        }
+        finally
+        {
+            ExitRuntimeRetirement();
+        }
 
         RuntimeSwapped?.Invoke();
+    }
+
+    private void EnterRuntimeRetirement()
+    {
+        Monitor.Enter(_runtimeLeaseGate);
+        _runtimeRetiring = true;
+        while (_activeRuntimeLeases > 0)
+            Monitor.Wait(_runtimeLeaseGate);
+    }
+
+    private void ExitRuntimeRetirement()
+    {
+        _runtimeRetiring = false;
+        Monitor.PulseAll(_runtimeLeaseGate);
+        Monitor.Exit(_runtimeLeaseGate);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> BuildPointMetadataIndex(
@@ -251,35 +341,40 @@ public sealed class RuntimeHost : IDisposable
 
     public void Start()
     {
+        using var lease = AcquireRuntimeLease();
         RequireScheduler().Start();
         Log.Info("运行", "连续运行开始");
     }
 
     public void Pause()
     {
+        using var lease = AcquireRuntimeLease();
         RequireScheduler().Pause();
-        Log.Info("运行", $"已暂停（{CycleSummary()}）");
+        Log.Info("运行", $"已暂停（{CycleSummary(lease.Runtime)}）");
     }
 
     /// <summary>完全停止：扫描线程退出（周期计数保留，可再 Start）。</summary>
     public void Stop()
     {
+        using var lease = AcquireRuntimeLease();
         RequireScheduler().Stop();
-        Log.Info("运行", $"已完全停止（{CycleSummary()}）");
+        Log.Info("运行", $"已完全停止（{CycleSummary(lease.Runtime)}）");
     }
 
     public void Step(int cycles = 1)
     {
+        using var lease = AcquireRuntimeLease();
         var scheduler = RequireScheduler();
         if (scheduler.State == ScanState.Running)
             throw new InvalidOperationException("连续运行中不能单步，请先暂停");
         scheduler.StepOnce(cycles);
-        Log.Info("运行", $"单步 {cycles} 周期（{CycleSummary()}）");
+        Log.Info("运行", $"单步 {cycles} 周期（{CycleSummary(lease.Runtime)}）");
     }
 
     public void SetCycle(string? dpuName, float seconds)
     {
-        var runtime = RequireRuntime();
+        using var lease = AcquireRuntimeLease();
+        var runtime = lease.Runtime;
         RequireScheduler().RunAtCycleBoundary(() =>
         {
             foreach (var dpu in runtime.Dpus)
@@ -293,11 +388,8 @@ public sealed class RuntimeHost : IDisposable
             : $"DPU {dpuName} 扫描周期 → {seconds * 1000:F0} ms");
     }
 
-    private string CycleSummary()
+    private static string CycleSummary(DcsRuntime runtime)
     {
-        var runtime = Runtime;
-        if (runtime == null)
-            return "";
         return string.Join(" ", runtime.Dpus.Take(4).Select(d => $"{d.Name}=c{d.CycleCount}")) +
                (runtime.Dpus.Count > 4 ? " …" : "");
     }
@@ -308,7 +400,8 @@ public sealed class RuntimeHost : IDisposable
 
     public string SaveCondition(string name, string? comment)
     {
-        var runtime = RequireRuntime();
+        using var lease = AcquireRuntimeLease();
+        var runtime = lease.Runtime;
         string dir = "";
         RequireScheduler().RunAtCycleBoundary(() =>
         {
@@ -360,7 +453,8 @@ public sealed class RuntimeHost : IDisposable
 
     public SnapshotV2Manifest SaveSnapshot(string name, string? comment)
     {
-        var runtime = RequireRuntime();
+        using var lease = AcquireRuntimeLease();
+        var runtime = lease.Runtime;
         SnapshotV2Manifest manifest = null!;
         var sw = Stopwatch.StartNew();
         RequireScheduler().RunAtCycleBoundary(() =>
@@ -376,7 +470,8 @@ public sealed class RuntimeHost : IDisposable
 
     public SnapshotLoadReport LoadSnapshot(string name)
     {
-        var runtime = RequireRuntime();
+        using var lease = AcquireRuntimeLease();
+        var runtime = lease.Runtime;
         SnapshotLoadReport report = null!;
         var sw = Stopwatch.StartNew();
         RequireScheduler().RunAtCycleBoundary(() =>
@@ -579,7 +674,6 @@ public sealed class RuntimeHost : IDisposable
     /// <summary>按功能码名或源文件热更换代（Roslyn 编译 → 周期边界原子替换）。</summary>
     public HotSwapReport HotLoad(string[] fcNamesOrFiles)
     {
-        var swapper = Swapper ?? throw new InvalidOperationException("尚未装载工程");
         string blocksSrc = _options.BlocksSourceDir ?? throw new InvalidOperationException("未配置热更源码目录");
 
         var files = new List<string>();
@@ -614,6 +708,8 @@ public sealed class RuntimeHost : IDisposable
             throw new InvalidOperationException($"编译失败：{compile.Errors.FirstOrDefault()}");
         }
 
+        using var lease = AcquireRuntimeLease();
+        var swapper = Swapper ?? throw new InvalidOperationException("尚未装载工程");
         HotSwapReport report = null!;
         RequireScheduler().RunAtCycleBoundary(() => report = swapper.Apply(compile.AssemblyImage!, compile.PdbImage));
 
@@ -683,8 +779,33 @@ public sealed class RuntimeHost : IDisposable
 
     public void Dispose()
     {
-        Scheduler?.Stop();
-        History?.Dispose();
-        Runtime?.Dispose();
+        lock (_runtimeLeaseGate)
+        {
+            if (_disposed)
+                return;
+        }
+
+        RuntimeChanging?.Invoke();
+        EnterRuntimeRetirement();
+        try
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            Scheduler?.Stop();
+            History?.Dispose();
+            Runtime?.Dispose();
+            Runtime = null;
+            Scheduler = null;
+            History = null;
+            Xref = null;
+            Swapper = null;
+        }
+        finally
+        {
+            ExitRuntimeRetirement();
+        }
+        RuntimeSwapped?.Invoke();
     }
 }

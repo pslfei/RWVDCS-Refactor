@@ -112,7 +112,7 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 状态与总览 ----------------
         api.MapGet("/status", () =>
         {
-            var rt = _host.Runtime;
+            using var runtimeLease = TryGetRuntime(out var rt);
             var gcInfo = GC.GetGCMemoryInfo();
             return Results.Json(new
             {
@@ -151,7 +151,7 @@ public sealed class ApiServer : IAsyncDisposable
         // 管理端丰富 DPU 视图。/api/dpus 保留给 EmbeddedHttpApi 旧协议。
         api.MapGet("/runtime/dpus", () =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var stats = _host.Scheduler?.Stats;
             return Results.Json(rt.Dpus.Select((d, i) => new
             {
@@ -171,7 +171,7 @@ public sealed class ApiServer : IAsyncDisposable
                     p99Ms = stats[i].PercentileMs(99),
                     overruns = stats[i].Overruns,
                 },
-            }));
+            }).ToArray());
         });
 
         // ---------------- 工程 ----------------
@@ -218,7 +218,7 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 点/块检索 ----------------
         api.MapGet("/points", (string? q, string? kind, string? dpu, int page = 1, int pageSize = 50) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             pageSize = Math.Clamp(pageSize, 1, 500);
             var items = new List<object>();
             int total = 0;
@@ -257,7 +257,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/blocks", (string? q, string? fc, string? dpu, int page = 1, int pageSize = 50) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             pageSize = Math.Clamp(pageSize, 1, 500);
             var items = new List<object>();
             int total = 0;
@@ -295,7 +295,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/fcs", () =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var d in rt.Dpus)
             foreach (var cmd in d.Commands)
@@ -307,7 +307,7 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 原版 EmbeddedHttpApi 兼容接口 ----------------
         api.MapGet("/diagnostics", () =>
         {
-            var rt = _host.Runtime;
+            using var runtimeLease = TryGetRuntime(out var rt);
             using var process = System.Diagnostics.Process.GetCurrentProcess();
             var stats = _host.Scheduler?.Stats;
             var dpus = rt == null
@@ -351,14 +351,14 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpus", () =>
         {
-            var rt = _host.Runtime;
+            using var runtimeLease = TryGetRuntime(out var rt);
             string[] dpus = rt?.Dpus.Select(d => d.Name).ToArray() ?? [];
             return Results.Json(new { count = dpus.Length, dpus });
         });
 
         api.MapGet("/dpu/blocks", (string? name) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var dpu = rt.FindDpu(name ?? "");
             if (dpu == null)
                 return Results.Json(new { dpu = name, count = 0, blocks = Array.Empty<object>() });
@@ -373,7 +373,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/blocks/details", (string? dpu) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var target = rt.FindDpu(dpu ?? "");
             if (target == null)
                 return Results.Json(new { dpu, count = 0, blocks = Array.Empty<object>() });
@@ -389,7 +389,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/points", (string? name) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var dpu = rt.FindDpu(name ?? "");
             if (dpu == null)
                 return Results.Json(new { dpu = name, count = 0, points = Array.Empty<object>() });
@@ -408,7 +408,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/block", (string? dpu, string? block) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             if (!TryFindBlock(rt, dpu, block, out var d, out var cmd))
                 return Results.Json(new { dpu, block, count = 0, pins = Array.Empty<object>() });
 
@@ -418,7 +418,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/block/pins", (string? dpu, string? name) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             if (!TryFindBlock(rt, dpu, name, out var d, out var cmd))
                 return Results.Json(new { dpu, block = name, count = 0, pins = Array.Empty<object>() });
 
@@ -428,7 +428,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/block/full", (string? dpu, string? block) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             if (!TryFindBlock(rt, dpu, block, out var targetDpu, out var cmd))
                 return Results.Json(new { dpu, block, count = 0, pins = Array.Empty<object>() });
 
@@ -455,7 +455,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/block/pin/point", (string? dpu, string? block, string? pin) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             string? pointName = TryFindBlock(rt, dpu, block, out _, out var cmd)
                 ? FindCompatPinPointName(cmd, pin ?? "")
                 : null;
@@ -467,7 +467,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (request == null || request.PinPaths == null || request.PinPaths.Count == 0)
                 return Results.Json(new { error = "请求体不能为空，需传入包含 Dpu 和 PinPaths 数组的对象" });
 
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var values = new Dictionary<string, string?>(StringComparer.Ordinal);
             foreach (string path in request.PinPaths)
             {
@@ -496,7 +496,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (request.Items.Count > LegacyMaxBatchItems)
                 return Results.Json(new { error = "单批最多 10,000 项" }, statusCode: StatusCodes.Status413PayloadTooLarge);
 
-            _ = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out _);
             string clientInfo = string.IsNullOrWhiteSpace(request.ClientInfo) ? "HttpApi" : request.ClientInfo.Trim();
             var results = new List<CompatSetVariablesItemResult>(request.Items.Count);
             var names = new string[request.Items.Count];
@@ -648,7 +648,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (count == 0 || request.DpuNames.Length != count || request.Members.Length != count)
                 return Results.Json(Array.Empty<long>());
 
-            _ = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out _);
             var canonicalNames = new string[count];
             var nullNames = new bool[count];
             for (int i = 0; i < count; i++)
@@ -672,7 +672,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapGet("/dpu/point", (string? dpu, string? point) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var target = rt.FindDpu(dpu ?? "");
             if (target == null || string.IsNullOrEmpty(point))
                 return Results.Json(new { dpu, point, count = 0, members = Array.Empty<object>() });
@@ -692,7 +692,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (pointNames == null || pointNames.Count == 0)
                 return Results.Json(new { error = "请求体不能为空，需传入测点名称的数组" });
 
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var result = new Dictionary<string, string?>(pointNames.Count, StringComparer.Ordinal);
             foreach (string raw in pointNames)
             {
@@ -749,7 +749,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (string.IsNullOrEmpty(name))
                 return Results.Json(new { error = "参数 name 不能为空" });
 
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var found = FindPoint(rt, name);
             if (found == null)
                 return Results.Json(new { point = name, dpu = (string?)null, count = 0, members = Array.Empty<object>() });
@@ -763,7 +763,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (string.IsNullOrEmpty(names))
                 return Results.Json(new { error = "参数 names 不能为空，格式: dpu.pointName 用逗号分隔" });
 
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             string[] requested = names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             var values = new List<object>(requested.Length);
             foreach (string fullName in requested)
@@ -833,7 +833,7 @@ public sealed class ApiServer : IAsyncDisposable
             if (string.IsNullOrEmpty(request.Dpu) || string.IsNullOrEmpty(request.Block) || string.IsNullOrEmpty(request.Pin))
                 return Results.Json(new { error = "参数 dpu, block, pin 不能为空" });
 
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             bool ok = false;
             object? forceValue = TryGetJsonValue(request.Value, out var parsed, out _) ? parsed : null;
             if (TryFindBlock(rt, request.Dpu, request.Block, out _, out var cmd))
@@ -866,7 +866,7 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 点详情（PointInfo）----------------
         api.MapGet("/point/{name}", (string name) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var (dpu, slot) = FindPoint(rt, name) ?? throw new InvalidOperationException($"点不存在：{name}");
             return Results.Json(new
             {
@@ -882,7 +882,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPut("/point/{name}/value", (string name, SetValueRequest req) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var (_, slot) = FindPoint(rt, name) ?? throw new InvalidOperationException($"点不存在：{name}");
             slot.WriteBoxedBuffer(ParsePointValue(slot.Kind, req.Value));
             _host.Log.Info("写值", $"点 {name} <= {req.Value}");
@@ -891,7 +891,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPut("/point/{name}/field", (string name, SetFieldRequest req) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var (_, slot) = FindPoint(rt, name) ?? throw new InvalidOperationException($"点不存在：{name}");
             if (!PointFieldAccess.Write(slot, req.Field, req.Value))
                 throw new InvalidOperationException($"字段写入失败：{name}.{req.Field}");
@@ -901,7 +901,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPost("/point/{name}/force", (string name, ForceRequest req) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var (_, slot) = FindPoint(rt, name) ?? throw new InvalidOperationException($"点不存在：{name}");
             if (!PointFieldAccess.SetForce(slot, req.Forced, req.Value))
                 throw new InvalidOperationException($"点强制失败：{name}");
@@ -912,14 +912,15 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 块详情（PointInfo 的块视图）----------------
         api.MapGet("/block/{dpu}/{name}", (string dpu, string name) =>
         {
-            var (d, cmd) = FindBlock(dpu, name);
+            using var runtimeLease = RequireRuntime(out var rt);
+            var (d, cmd) = FindBlock(rt, dpu, name);
             return Results.Json(BuildBlockDetail(d, cmd));
         });
 
         // 跨 DPU 找块（列表页跳转用）
         api.MapGet("/blockfind/{name}", (string name) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             foreach (var d in rt.Dpus)
             {
                 var cmd = d.FindCommand(name);
@@ -931,7 +932,8 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPost("/block/{dpu}/{name}/force", (string dpu, string name, PinForceRequest req) =>
         {
-            var (_, cmd) = FindBlock(dpu, name);
+            using var runtimeLease = RequireRuntime(out var rt);
+            var (_, cmd) = FindBlock(rt, dpu, name);
             object forceValue = ParseForPin(cmd, req.Pin, req.Value);
             cmd.SetPinForce(req.Pin, req.Forced, forceValue);
             _host.Log.Info("强制", req.Forced
@@ -942,7 +944,8 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPut("/block/{dpu}/{name}/field", (string dpu, string name, SetFieldRequest req) =>
         {
-            var (d, cmd) = FindBlock(dpu, name);
+            using var runtimeLease = RequireRuntime(out var rt);
+            var (d, cmd) = FindBlock(rt, dpu, name);
             object value = ParseForField(cmd, req.Field, req.Value);
             if (!cmd.SetField(req.Field, value))
                 throw new InvalidOperationException($"字段写入失败：{name}.{req.Field}");
@@ -979,7 +982,7 @@ public sealed class ApiServer : IAsyncDisposable
 
         api.MapPost("/values/iomap/mark", (IomapMarkRequest req) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var names = req.Names ?? [];
             var results = _compatGateway.Values.MarkIomapByNames(names);
             return Results.Json(new { results, ownedCount = rt.Iomap.OwnedCount });
@@ -988,7 +991,7 @@ public sealed class ApiServer : IAsyncDisposable
         // 批量类型描述：Remoting 适配器订阅时定型（保证回传老客户端的装箱类型一致）
         api.MapPost("/values/describe", (BatchReadRequest req) =>
         {
-            var rt = RequireRuntime();
+            using var runtimeLease = RequireRuntime(out var rt);
             var items = new object?[req.Names.Length];
             for (int i = 0; i < req.Names.Length; i++)
                 items[i] = DescribeMember(rt, req.Names[i]);
@@ -1131,8 +1134,8 @@ public sealed class ApiServer : IAsyncDisposable
         // ---------------- 历史站 ----------------
         api.MapGet("/history/query", (string point, int max = 200) =>
         {
+            using var runtimeLease = RequireRuntime(out var rt);
             var history = _host.History ?? throw new InvalidOperationException("历史站未启用（启动加 --history）");
-            var rt = RequireRuntime();
             var (dpu, _) = FindPoint(rt, point) ?? throw new InvalidOperationException($"点不存在：{point}");
             history.Flush();
             string file = Path.Combine(history.SessionDirectory,
@@ -1854,8 +1857,19 @@ public sealed class ApiServer : IAsyncDisposable
         return false;
     }
 
-    private DcsRuntime RequireRuntime()
-        => _host.Runtime ?? throw new InvalidOperationException("尚未装载工程");
+    private RuntimeReadLease RequireRuntime(out DcsRuntime runtime)
+    {
+        RuntimeReadLease lease = _host.AcquireRuntimeLease();
+        runtime = lease.Runtime;
+        return lease;
+    }
+
+    private RuntimeReadLease? TryGetRuntime(out DcsRuntime? runtime)
+    {
+        RuntimeReadLease? lease = _host.TryAcquireRuntimeLease();
+        runtime = lease?.Runtime;
+        return lease;
+    }
 
     private (DpuRuntime Dpu, PointSlotRef Slot)? FindPoint(DcsRuntime rt, string name)
     {
@@ -2146,9 +2160,8 @@ public sealed class ApiServer : IAsyncDisposable
         return false;
     }
 
-    private (DpuRuntime, BlockCommand) FindBlock(string dpuName, string blockName)
+    private static (DpuRuntime, BlockCommand) FindBlock(DcsRuntime rt, string dpuName, string blockName)
     {
-        var rt = RequireRuntime();
         var dpu = rt.FindDpu(dpuName) ?? throw new InvalidOperationException($"DPU 不存在：{dpuName}");
         var cmd = dpu.FindCommand(blockName) ?? throw new InvalidOperationException($"块不存在：{dpuName}/{blockName}");
         return (dpu, cmd);
