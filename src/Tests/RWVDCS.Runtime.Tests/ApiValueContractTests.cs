@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text.Json;
 using RWVDCS.Api;
 using RWVDCS.Core.Blocks;
+using RWVDCS.Core.Types;
 using RWVDCS.Engineering;
 using RWVDCS.Runtime;
 
@@ -13,7 +14,7 @@ namespace RWVDCS.Runtime.Tests;
 public sealed class ApiValueContractTests
 {
     [Fact]
-    public async Task Value_endpoints_return_engineering_metadata_and_compatibility_status_fields()
+    public async Task Value_points_and_blocks_endpoints_return_engineering_metadata_and_compatibility_status_fields()
     {
         string dataDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -72,6 +73,47 @@ public sealed class ApiValueContractTests
             Assert.Equal("6", compatValues.GetProperty("AI001.cUrOvErStAtE").GetString());
             Assert.Equal("1", compatValues.GetProperty("AI001.dataQuality").GetString());
             Assert.Equal("1", compatValues.GetProperty("AI001.DATAQUALITY").GetString());
+
+            using HttpResponseMessage pointsResponse = await client.GetAsync(
+                "/api/points?dpu=DPU1&page=1&pageSize=50");
+
+            Assert.Equal(HttpStatusCode.OK, pointsResponse.StatusCode);
+            using JsonDocument pointsJson = JsonDocument.Parse(
+                await pointsResponse.Content.ReadAsStreamAsync());
+            JsonElement pointItem = Assert.Single(
+                pointsJson.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "AI001");
+            Assert.Equal("给水流量", pointItem.GetProperty("description").GetString());
+
+            JsonElement pointWithoutDescription = Assert.Single(
+                pointsJson.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "DI001");
+            Assert.Equal(
+                JsonValueKind.Null,
+                pointWithoutDescription.GetProperty("description").ValueKind);
+
+            using HttpResponseMessage blocksResponse = await client.GetAsync(
+                "/api/blocks?dpu=DPU1&page=1&pageSize=50");
+
+            Assert.Equal(HttpStatusCode.OK, blocksResponse.StatusCode);
+            using JsonDocument blocksJson = JsonDocument.Parse(
+                await blocksResponse.Content.ReadAsStreamAsync());
+            JsonElement blockItem = Assert.Single(
+                blocksJson.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "BLOCK001");
+            Assert.Equal("功能块描述", blockItem.GetProperty("description").GetString());
+
+            using HttpResponseMessage blockResponse = await client.GetAsync(
+                "/api/block/DPU1/BLOCK001");
+
+            Assert.Equal(HttpStatusCode.OK, blockResponse.StatusCode);
+            using JsonDocument blockJson = JsonDocument.Parse(
+                await blockResponse.Content.ReadAsStreamAsync());
+            JsonElement block = blockJson.RootElement;
+            Assert.Equal("功能块描述", block.GetProperty("description").GetString());
+            AssertBlockMemberDescription(block, "inputs", "pin", "Input", "输入管脚描述");
+            AssertBlockMemberDescription(block, "outputs", "pin", "Output", "输出管脚描述");
+            AssertBlockMemberDescription(block, "constants", "name", "Gain", "规格数描述");
         }
         finally
         {
@@ -100,6 +142,19 @@ public sealed class ApiValueContractTests
         Assert.DoesNotContain(
             members,
             member => member.GetProperty("name").GetString() == "ControllerAddress");
+    }
+
+    private static void AssertBlockMemberDescription(
+        JsonElement block,
+        string collectionName,
+        string memberNameProperty,
+        string memberName,
+        string expectedDescription)
+    {
+        JsonElement member = Assert.Single(
+            block.GetProperty(collectionName).EnumerateArray(),
+            item => item.GetProperty(memberNameProperty).GetString() == memberName);
+        Assert.Equal(expectedDescription, member.GetProperty("description").GetString());
     }
 
     private static void AssertEngineeringMember(JsonElement[] members, string name, int expected)
@@ -171,6 +226,7 @@ public sealed class ApiValueContractTests
                             ID = 101,
                             Name = "AI001",
                             DataType = "LA",
+                            Description = "给水流量",
                             DefaultValue = 95f,
                             MaxValue = 1000f,
                             MinValue = -1000f,
@@ -195,7 +251,37 @@ public sealed class ApiValueContractTests
                             DefaultValue = false,
                         },
                     ],
-                    Blocks = [],
+                    Blocks =
+                    [
+                        new BlockModel
+                        {
+                            Name = "BLOCK001",
+                            FcName = "API_METADATA_TEST",
+                            Description = "功能块描述",
+                            Pins =
+                            [
+                                new PinDetailModel
+                                {
+                                    PinName = "Input",
+                                    Description = "输入管脚描述",
+                                    HasDefaultValue = false,
+                                },
+                                new PinDetailModel
+                                {
+                                    PinName = "Output",
+                                    Description = "输出管脚描述",
+                                    HasDefaultValue = false,
+                                },
+                                new PinDetailModel
+                                {
+                                    PinName = "Gain",
+                                    Description = "规格数描述",
+                                    HasDefaultValue = true,
+                                    DefaultValue = 2f,
+                                },
+                            ],
+                        },
+                    ],
                 },
             ],
         };
@@ -218,6 +304,13 @@ public sealed class ApiValueContractTests
                 StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
         SetPrivateField(host, "_pointMetadataByDpu", pointsByDpu);
+        var blocksByDpu = model.Controllers.ToDictionary(
+            controller => controller.Name,
+            controller => (IReadOnlyDictionary<string, BlockModel>)controller.Blocks.ToDictionary(
+                block => block.Name,
+                StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+        SetPrivateField(host, "_blockMetadataByDpu", blocksByDpu);
         SetPrivateField(
             host,
             "_controllerMetadataById",
@@ -238,5 +331,22 @@ public sealed class ApiValueContractTests
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+}
+
+[FCName("API_METADATA_TEST")]
+public sealed class ApiMetadataTestFunction : Function
+{
+    [PinType(PinTypes.Input)]
+    public LA Input = new();
+
+    [PinType(PinTypes.Output)]
+    public LA Output = new();
+
+    [PinType(PinTypes.Constant)]
+    public float Gain;
+
+    protected override void Run(ICommand cmd)
+    {
     }
 }

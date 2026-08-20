@@ -21,6 +21,23 @@ public sealed class EngineeringMetadataTests
     }
 
     [Fact]
+    public void Block_pin_description_participates_in_fingerprint_and_model_diff()
+    {
+        EngineeringModel baseline = BuildModel();
+        EngineeringModel changed = BuildModel(pinDescription: "新的输入描述");
+
+        Assert.NotEqual(
+            ProjectFingerprint.Compute(baseline),
+            ProjectFingerprint.Compute(changed));
+
+        ModelDiffReport diff = ModelDiff.Compare(baseline, changed);
+        DiffEntry block = Assert.Single(
+            diff.Entries,
+            entry => entry.Kind == DiffKind.BlockParamChanged && entry.Name == "BLOCK001");
+        Assert.Contains("描述 输入描述 → 新的输入描述", block.Detail);
+    }
+
+    [Fact]
     public void ModelDiff_reports_point_identity_priorities_and_controller_address()
     {
         EngineeringModel baseline = BuildModel();
@@ -49,7 +66,8 @@ public sealed class EngineeringMetadataTests
         int pointId = 101,
         int lowAlarm1Priority = 1,
         int highAlarm3Priority = 1,
-        string controllerAddress = "1001") => new()
+        string controllerAddress = "1001",
+        string pinDescription = "输入描述") => new()
     {
         ProjectPath = "engineering-metadata-test",
         Controllers =
@@ -75,7 +93,24 @@ public sealed class EngineeringMetadataTests
                         HighAlarm3Priority = highAlarm3Priority,
                     },
                 ],
-                Blocks = [],
+                Blocks =
+                [
+                    new BlockModel
+                    {
+                        Name = "BLOCK001",
+                        FcName = "TEST",
+                        Description = "功能块描述",
+                        Pins =
+                        [
+                            new PinDetailModel
+                            {
+                                PinName = "Input",
+                                Description = pinDescription,
+                                HasDefaultValue = false,
+                            },
+                        ],
+                    },
+                ],
             },
         ],
     };

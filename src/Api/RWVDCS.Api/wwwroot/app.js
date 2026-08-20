@@ -9,6 +9,12 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function descriptionCell(value) {
+  const description = String(value ?? "").trim();
+  const content = description ? esc(description) : '<span class="dim">—</span>';
+  return `<td class="description-column" title="${esc(description)}">${content}</td>`;
+}
+
 async function api(path, opts = {}) {
   const init = { headers: {} };
   if (opts.method) init.method = opts.method;
@@ -277,7 +283,7 @@ function renderBlocks(body) {
       <span class="spacer"></span><span id="total" class="dim"></span>
     </div>
     <table class="grid"><thead><tr>
-      <th style="width:30px"></th><th>块名</th><th>功能码</th><th>DPU</th><th class="num">入/出</th><th>强制</th><th></th>
+      <th style="width:30px"></th><th>块名</th><th class="description-column">描述</th><th>功能码</th><th>DPU</th><th class="num">入/出</th><th>强制</th><th></th>
     </tr></thead><tbody id="rows"></tbody></table>
     <div class="pager">
       <button id="prev" class="btn btn-mini">上一页</button>
@@ -303,6 +309,7 @@ function renderBlocks(body) {
     $("#rows").innerHTML = data.items.map(b => `<tr>
       <td><span class="fav ${favStore.hasBlock(b.dpu, b.name) ? "on" : ""}" data-dpu="${esc(b.dpu)}" data-name="${esc(b.name)}">★</span></td>
       <td class="mono"><a class="link" href="#/pointinfo?type=block&dpu=${encodeURIComponent(b.dpu)}&name=${encodeURIComponent(b.name)}">${esc(b.name)}</a></td>
+      ${descriptionCell(b.description)}
       <td>${esc(b.fc)}</td><td>${esc(b.dpu)}</td>
       <td class="num">${b.inputs}/${b.outputs}</td>
       <td>${b.forced ? '<span class="badge badge-warn">强制</span>' : ""}</td>
@@ -334,7 +341,7 @@ function renderPoints(body) {
       <span class="spacer"></span><span id="total" class="dim"></span>
     </div>
     <table class="grid"><thead><tr>
-      <th style="width:30px"></th><th>点名</th><th>类型</th><th>DPU</th><th class="num">当前值</th><th>强制</th><th></th>
+      <th style="width:30px"></th><th>点名</th><th class="description-column">描述</th><th>类型</th><th>DPU</th><th class="num">当前值</th><th>强制</th><th></th>
     </tr></thead><tbody id="rows"></tbody></table>
     <div class="pager">
       <button id="prev" class="btn btn-mini">上一页</button>
@@ -353,13 +360,14 @@ function renderPoints(body) {
     $("#total").textContent = `共 ${data.total.toLocaleString()} 点`;
     $("#pageinfo").textContent = `第 ${data.page} / ${Math.max(1, Math.ceil(data.total / data.pageSize))} 页`;
     $("#rows").innerHTML = data.items.map(p => `<tr>
-      <td><span class="fav ${favStore.hasPoint(p.name) ? "on" : ""}" data-name="${esc(p.name)}">★</span></td>
-      <td class="mono"><a class="link" href="#/pointinfo?type=point&name=${encodeURIComponent(p.name)}">${esc(p.name)}</a></td>
-      <td>${p.kind}</td><td>${esc(p.dpu)}</td>
-      <td class="num">${fmtVal(p.value)}</td>
-      <td>${p.forced ? '<span class="badge badge-warn">强制</span>' : ""}</td>
-      <td><a class="link" href="#/pointinfo?type=point&name=${encodeURIComponent(p.name)}">PointInfo →</a></td>
-    </tr>`).join("");
+        <td><span class="fav ${favStore.hasPoint(p.name) ? "on" : ""}" data-name="${esc(p.name)}">★</span></td>
+        <td class="mono"><a class="link" href="#/pointinfo?type=point&name=${encodeURIComponent(p.name)}">${esc(p.name)}</a></td>
+        ${descriptionCell(p.description)}
+        <td>${p.kind}</td><td>${esc(p.dpu)}</td>
+        <td class="num">${fmtVal(p.value)}</td>
+        <td>${p.forced ? '<span class="badge badge-warn">强制</span>' : ""}</td>
+        <td><a class="link" href="#/pointinfo?type=point&name=${encodeURIComponent(p.name)}">PointInfo →</a></td>
+      </tr>`).join("");
     $$(".fav", $("#rows")).forEach(f => f.onclick = () => {
       const on = favStore.togglePoint(f.dataset.name);
       f.classList.toggle("on", on);
@@ -447,6 +455,8 @@ async function renderBlockInfo(main, dpu, name) {
   catch (e) { main.innerHTML = `<h2>PointInfo</h2><p class="dim">${esc(e.message)}</p>`; return; }
 
   const isFav = favStore.hasBlock(dpu, name);
+  const blockDescription = String(detail.description ?? "").trim();
+  const blockDescriptionHtml = blockDescription ? esc(blockDescription) : '<span class="dim">—</span>';
   main.innerHTML = `
     <div class="pi-head">
       <span class="fav ${isFav ? "on" : ""}" id="pi-fav" style="font-size:17px">★</span>
@@ -454,6 +464,7 @@ async function renderBlockInfo(main, dpu, name) {
       <span class="kv">功能码 <b>${esc(detail.fc)}</b></span>
       <span class="kv">DPU <b>${esc(detail.dpu)}</b></span>
       <span class="kv">状态区 <b>${detail.stateBytes} B</b></span>
+      <span class="kv pi-description">描述 <b title="${esc(blockDescription)}">${blockDescriptionHtml}</b></span>
       <span class="spacer"></span>
       <label><input type="checkbox" id="pi-auto" checked> 自动刷新</label>
     </div>
@@ -482,9 +493,10 @@ async function renderBlockInfo(main, dpu, name) {
     if (!body) return;
     if (tab === "inputs") {
       body.innerHTML = `<table class="grid"><thead><tr>
-        <th>管脚</th><th>类型</th><th class="num">当前值</th><th>连接点</th><th>交叉引用（源头）</th><th>强制</th><th>强制值</th><th></th>
+        <th>管脚</th><th class="description-column">描述</th><th>类型</th><th class="num">当前值</th><th>连接点</th><th>交叉引用（源头）</th><th>强制</th><th>强制值</th><th></th>
       </tr></thead><tbody>` + detail.inputs.map(p => `<tr class="${p.forced ? "force-on" : ""}">
         <td class="mono">${esc(p.pin)}</td>
+        ${descriptionCell(p.description)}
         <td>${esc(p.type)}</td>
         <td class="num">${fmtVal(p.value)}</td>
         <td class="mono">${p.point ? `<a class="link" href="#/pointinfo?type=point&name=${encodeURIComponent(p.point)}">${p.reversed ? "~" : ""}${esc(p.point)}</a>${p.dead ? ' <span class="badge badge-dim">死绑定</span>' : ""}` : '<span class="dim">-</span>'}</td>
@@ -497,9 +509,10 @@ async function renderBlockInfo(main, dpu, name) {
       bindForce(body);
     } else if (tab === "outputs") {
       body.innerHTML = `<table class="grid"><thead><tr>
-        <th>管脚</th><th>类型</th><th class="num">当前值</th><th>目标点 / 使用方</th><th>强制</th><th>强制值</th><th></th>
+        <th>管脚</th><th class="description-column">描述</th><th>类型</th><th class="num">当前值</th><th>目标点 / 使用方</th><th>强制</th><th>强制值</th><th></th>
       </tr></thead><tbody>` + detail.outputs.map(p => `<tr class="${p.forced ? "force-on" : ""}">
         <td class="mono">${esc(p.pin)}</td>
+        ${descriptionCell(p.description)}
         <td>${esc(p.type)}</td>
         <td class="num">${fmtVal(p.value)}</td>
         <td>${p.targets.length ? p.targets.map(t =>
@@ -514,9 +527,10 @@ async function renderBlockInfo(main, dpu, name) {
     } else {
       const rows = tab === "constants" ? detail.constants : detail.internals;
       body.innerHTML = `<table class="grid"><thead><tr>
-        <th>名称</th><th>类型</th><th class="num">当前值</th><th>新值</th><th></th>
+        <th>名称</th><th class="description-column">描述</th><th>类型</th><th class="num">当前值</th><th>新值</th><th></th>
       </tr></thead><tbody>` + rows.map(r => `<tr>
         <td class="mono">${esc(r.name)}</td>
+        ${descriptionCell(r.description)}
         <td>${esc(r.type)}</td>
         <td class="num">${fmtVal(r.value)}</td>
         <td>${r.writable ? `<input class="cell-edit w-val" data-field="${esc(r.name)}">` : '<span class="dim">只读</span>'}</td>

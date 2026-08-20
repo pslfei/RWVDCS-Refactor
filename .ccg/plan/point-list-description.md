@@ -246,7 +246,7 @@ Value_and_points_endpoints_return_engineering_metadata_and_compatibility_status_
 2. 完整回归：
 
    ```powershell
-   dotnet test RWVDCS.sln
+   dotnet test src/RWVDCS.Next.slnx
    ```
 
 3. API 冒烟检查：
@@ -257,4 +257,3 @@ Value_and_points_endpoints_return_engineering_metadata_and_compatibility_status_
    ```
 
 4. 浏览器验证：访问 `http://localhost:5100/#/browse?tab=points`，搜索一个已知有描述的点，再检查空描述和长描述点；部署到 `192.168.1.135` 后用 `Ctrl+F5` 刷新并重复验证。
-

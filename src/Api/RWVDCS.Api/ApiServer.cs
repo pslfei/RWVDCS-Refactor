@@ -240,10 +240,15 @@ public sealed class ApiServer : IAsyncDisposable
                     int skip = (page - 1) * pageSize;
                     if (total > skip && items.Count < pageSize)
                     {
+                        string? description = _host.TryGetPointModel(d.Name, name, out var pointModel)
+                            ? pointModel.Description
+                            : null;
+
                         items.Add(new
                         {
                             dpu = d.Name,
                             name,
+                            description,
                             kind = slot.Kind.ToString(),
                             value = slot.ReadBoxedBuffer(),
                             forced = IsPointForced(slot),
@@ -277,10 +282,15 @@ public sealed class ApiServer : IAsyncDisposable
                     int skip = (page - 1) * pageSize;
                     if (total > skip && items.Count < pageSize)
                     {
+                        string? description = _host.TryGetBlockModel(d.Name, cmd.Name, out var blockModel)
+                            ? blockModel.Description
+                            : null;
+
                         items.Add(new
                         {
                             dpu = d.Name,
                             name = cmd.Name,
+                            description,
                             fc = cmd.FcName,
                             inputs = cmd.Inputs.Count,
                             outputs = cmd.Outputs.Count,
@@ -1197,6 +1207,11 @@ public sealed class ApiServer : IAsyncDisposable
     {
         var schema = BlockStateSchema.For(cmd.Fc.GetType());
         var forceStates = cmd.ForceStates;
+        BlockModel? blockModel = _host.TryGetBlockModel(dpu.Name, cmd.Name, out var metadata)
+            ? metadata
+            : null;
+
+        string? PinDescription(string pinName) => blockModel?.FindPin(pinName)?.Description;
 
         var inputsByField = cmd.Inputs.ToLookup(b => b.Pin.Field.Name, StringComparer.Ordinal);
         var outputsByField = cmd.Outputs.ToLookup(b => b.Pin.Field.Name, StringComparer.Ordinal);
@@ -1231,6 +1246,7 @@ public sealed class ApiServer : IAsyncDisposable
                         inputs.Add(new
                         {
                             pin = f.Name,
+                            description = PinDescription(f.Name),
                             type = f.Field.FieldType.Name,
                             value,
                             point = binding?.PointName,
@@ -1248,6 +1264,7 @@ public sealed class ApiServer : IAsyncDisposable
                         outputs.Add(new
                         {
                             pin = f.Name,
+                            description = PinDescription(f.Name),
                             type = f.Field.FieldType.Name,
                             value,
                             targets = bindings.Select(b => new
@@ -1269,6 +1286,7 @@ public sealed class ApiServer : IAsyncDisposable
                     constants.Add(new
                     {
                         name = f.Name,
+                        description = PinDescription(f.Name),
                         type = FriendlyType(f),
                         value = FormatFieldValue(f, cmd.Fc),
                         writable = f.Kind == StateFieldKind.Unmanaged || f.Kind == StateFieldKind.FixedString,
@@ -1281,6 +1299,7 @@ public sealed class ApiServer : IAsyncDisposable
                     internals.Add(new
                     {
                         name = f.Name,
+                        description = PinDescription(f.Name),
                         type = FriendlyType(f),
                         value = FormatFieldValue(f, cmd.Fc),
                         writable = f.Kind == StateFieldKind.Unmanaged || f.Kind == StateFieldKind.FixedString,
@@ -1294,6 +1313,7 @@ public sealed class ApiServer : IAsyncDisposable
             dpu = dpu.Name,
             name = cmd.Name,
             fc = cmd.FcName,
+            description = blockModel?.Description,
             stateBytes = schema.ByteLength,
             inputs,
             outputs,

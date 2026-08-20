@@ -53,13 +53,13 @@ public static class MdbEngineeringReader
             "SELECT ID, Name, AlgName, FunctionName, Description, Prj_Controller_ID FROM Cld_FCBlock"),
             r => (int)r["Prj_Controller_ID"]);
         var inputsByCtrl = GroupBy(Query(conn,
-            "SELECT ID, PinName, PointName, InitialValue, Negate, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCInput"),
+            "SELECT ID, PinName, PointName, InitialValue, Negate, Description, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCInput"),
             r => (int)r["Prj_Controller_ID"]);
         var outputsByCtrl = GroupBy(Query(conn,
-            "SELECT ID, PinName, PointName, InitialValue, Negate, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCOutput"),
+            "SELECT ID, PinName, PointName, InitialValue, Negate, Description, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCOutput"),
             r => (int)r["Prj_Controller_ID"]);
         var paramsByCtrl = GroupBy(Query(conn,
-            "SELECT ID, Name, PValue, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCParameter"),
+            "SELECT ID, Name, PValue, Description, Cld_FCBlock_ID, Prj_Controller_ID FROM Cld_FCParameter"),
             r => (int)r["Prj_Controller_ID"]);
 
         foreach (var c in controllerRows)
@@ -247,7 +247,7 @@ public static class MdbEngineeringReader
                 string pinName = Str(input["PinName"]);
                 string pointName = Str(input["PointName"]);
                 string initialValue = Str(input["InitialValue"]);
-                AddPin(BuildIoPin(pinName, pointName, initialValue));
+                AddPin(BuildIoPin(pinName, pointName, initialValue, Str(input["Description"])));
             }
 
             // -------- 输出管脚 --------
@@ -256,7 +256,7 @@ public static class MdbEngineeringReader
                 string pinName = Str(output["PinName"]);
                 string pointName = Str(output["PointName"]);
                 string initialValue = Str(output["InitialValue"]);
-                AddPin(BuildIoPin(pinName, pointName, initialValue));
+                AddPin(BuildIoPin(pinName, pointName, initialValue, Str(output["Description"])));
             }
 
             // -------- 规格参数（Constant）--------
@@ -266,7 +266,7 @@ public static class MdbEngineeringReader
             {
                 string pValue = Str(param["PValue"]);
                 string pinName = Str(param["Name"]);
-                AddPin(BuildParamPin(fcName, pinName, pValue, meta, paramState));
+                AddPin(BuildParamPin(fcName, pinName, pValue, Str(param["Description"]), meta, paramState));
             }
 
             AddPin(new PinDetailModel
@@ -298,7 +298,11 @@ public static class MdbEngineeringReader
     /// 这里推迟到装配阶段再解析（因为跨 DPU 点在本控制器 pointDict 必然缺失，统一 0f），
     /// 为完全对齐，我们保留一个标记 DefaultFromPoint。
     /// </summary>
-    private static PinDetailModel BuildIoPin(string pinName, string pointName, string initialValue)
+    private static PinDetailModel BuildIoPin(
+        string pinName,
+        string pointName,
+        string initialValue,
+        string description)
     {
         if (!string.IsNullOrEmpty(pointName))
         {
@@ -308,6 +312,7 @@ public static class MdbEngineeringReader
             return new PinDetailModel
             {
                 PinName = pinName,
+                Description = description,
                 PointName = cleanName,
                 Reversed = reversed,
                 HasDefaultValue = true,
@@ -327,12 +332,18 @@ public static class MdbEngineeringReader
             return new PinDetailModel
             {
                 PinName = pinName,
+                Description = description,
                 HasDefaultValue = true,
                 DefaultValue = val,
             };
         }
 
-        return new PinDetailModel { PinName = pinName, HasDefaultValue = false };
+        return new PinDetailModel
+        {
+            PinName = pinName,
+            Description = description,
+            HasDefaultValue = false,
+        };
     }
 
     /// <summary>跨参数/跨块粘滞的 DataType 状态（对齐老系统 Operation.cs 338 行局部变量的事实语义）。</summary>
@@ -341,19 +352,25 @@ public static class MdbEngineeringReader
         public string DataType = string.Empty;
     }
 
-    private static PinDetailModel? BuildParamPin(string fcName, string pinName, string pValue, MetaCatalog meta, ParamParseState state)
+    private static PinDetailModel? BuildParamPin(
+        string fcName,
+        string pinName,
+        string pValue,
+        string description,
+        MetaCatalog meta,
+        ParamParseState state)
     {
         // HollySys 内部块参数（本工程无此数据，仍保留路径）
         if (pValue.Contains(":="))
         {
             return new PinDetailModel
             {
-                PinName = pinName, PointName = "", HasDefaultValue = true, DefaultValue = pValue,
+                PinName = pinName, Description = description, PointName = "", HasDefaultValue = true, DefaultValue = pValue,
             };
         }
 
         if (string.IsNullOrEmpty(pValue))
-            return new PinDetailModel { PinName = pinName, HasDefaultValue = false };
+            return new PinDetailModel { PinName = pinName, Description = description, HasDefaultValue = false };
 
         float val = 0;
 
@@ -377,7 +394,7 @@ public static class MdbEngineeringReader
         {
             return new PinDetailModel
             {
-                PinName = pinName, PointName = "", HasDefaultValue = true, DefaultValue = pValue,
+                PinName = pinName, Description = description, PointName = "", HasDefaultValue = true, DefaultValue = pValue,
             };
         }
 
@@ -392,10 +409,22 @@ public static class MdbEngineeringReader
             var arr = new float[parts.Length];
             for (int i = 0; i < arr.Length; i++)
                 arr[i] = float.Parse(parts[i], CultureInfo.InvariantCulture);
-            return new PinDetailModel { PinName = pinName, HasDefaultValue = true, DefaultValue = arr };
+            return new PinDetailModel
+            {
+                PinName = pinName,
+                Description = description,
+                HasDefaultValue = true,
+                DefaultValue = arr,
+            };
         }
 
-        return new PinDetailModel { PinName = pinName, HasDefaultValue = true, DefaultValue = val };
+        return new PinDetailModel
+        {
+            PinName = pinName,
+            Description = description,
+            HasDefaultValue = true,
+            DefaultValue = val,
+        };
     }
 
     /// <summary>

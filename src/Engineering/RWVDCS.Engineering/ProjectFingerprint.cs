@@ -59,10 +59,12 @@ public static class ProjectFingerprint
                 {
                     w.Write(b.Name);
                     w.Write(b.FcName);
+                    w.Write(b.Description ?? "");
                     w.Write(b.Pins.Count);
                     foreach (var pin in b.Pins)
                     {
                         w.Write(pin.PinName);
+                        w.Write(pin.Description ?? "");
                         w.Write(pin.PointName ?? "");
                         w.Write(pin.Reversed);
                         w.Write(pin.HasDefaultValue);

@@ -31,6 +31,7 @@ public sealed class EngineeringModel
                 Pins = b.Pins.Select(p => new PinDetailModel
                 {
                     PinName = p.PinName,
+                    Description = p.Description,
                     PointName = p.PointName,
                     Reversed = p.Reversed,
                     HasDefaultValue = p.HasDefaultValue,
@@ -126,6 +127,9 @@ public sealed class BlockModel
 public sealed class PinDetailModel
 {
     public required string PinName { get; init; }
+
+    /// <summary>Cld_FCInput/Cld_FCOutput/Cld_FCParameter.Description。</summary>
+    public string? Description { get; init; }
 
     /// <summary>连接的点名（可为 null；可含逗号分隔多点；单点时 ~ 已剥离并置 Reversed）。</summary>
     public string? PointName { get; set; }

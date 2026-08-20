@@ -95,6 +95,8 @@ public sealed class RuntimeHost : IDisposable
     private DownloadPlan? _pendingPlan;
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, PointModel>> _pointMetadataByDpu =
         new Dictionary<string, IReadOnlyDictionary<string, PointModel>>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<string, BlockModel>> _blockMetadataByDpu =
+        new Dictionary<string, IReadOnlyDictionary<string, BlockModel>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<int, ControllerModel> _controllerMetadataById =
         new Dictionary<int, ControllerModel>();
 
@@ -162,6 +164,16 @@ public sealed class RuntimeHost : IDisposable
         if (index.TryGetValue(dpuName, out var points) && points.TryGetValue(pointName, out point!))
             return true;
         point = null!;
+        return false;
+    }
+
+    /// <summary>按 DPU/块名 O(1) 查询当前代的只读工程元数据。</summary>
+    public bool TryGetBlockModel(string dpuName, string blockName, out BlockModel block)
+    {
+        var index = _blockMetadataByDpu;
+        if (index.TryGetValue(dpuName, out var blocks) && blocks.TryGetValue(blockName, out block!))
+            return true;
+        block = null!;
         return false;
     }
 
@@ -257,6 +269,7 @@ public sealed class RuntimeHost : IDisposable
             Runtime = newRuntime;
             PristineModel = pristine;
             _pointMetadataByDpu = BuildPointMetadataIndex(pristine);
+            _blockMetadataByDpu = BuildBlockMetadataIndex(pristine);
             _controllerMetadataById = BuildControllerMetadataIndex(pristine);
             MdbPath = mdbPath;
             Fingerprint = fingerprint;
@@ -317,6 +330,23 @@ public sealed class RuntimeHost : IDisposable
             foreach (var point in controller.Points)
                 points.TryAdd(point.Name, point); // 与 RuntimeBuilder 的重名首见生效一致
             byDpu.TryAdd(controller.Name, points);
+        }
+
+        return byDpu;
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, BlockModel>> BuildBlockMetadataIndex(
+        EngineeringModel model)
+    {
+        var byDpu = new Dictionary<string, IReadOnlyDictionary<string, BlockModel>>(
+            model.Controllers.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var controller in model.Controllers)
+        {
+            var blocks = new Dictionary<string, BlockModel>(StringComparer.OrdinalIgnoreCase);
+            foreach (var block in controller.Blocks)
+                blocks.TryAdd(block.Name, block); // 与 RuntimeBuilder 的重名首见生效一致
+            byDpu.TryAdd(controller.Name, blocks);
         }
 
         return byDpu;

@@ -214,6 +214,8 @@ public static class ModelDiff
             {
                 param.Add($"{pin}: {ProjectFingerprint.FormatValue(op.DefaultValue)} → {ProjectFingerprint.FormatValue(np.DefaultValue)}");
             }
+            if (!string.Equals(op.Description, np.Description, StringComparison.Ordinal))
+                param.Add($"{pin}: 描述 {op.Description} → {np.Description}");
         }
 
         foreach (var (pin, np) in newPins)
