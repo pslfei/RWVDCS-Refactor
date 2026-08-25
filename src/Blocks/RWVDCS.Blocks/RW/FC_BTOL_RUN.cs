@@ -43,7 +43,7 @@ namespace RWVDCS.Blocks.RW
             }
 
             // 4. 将结果写回输出
-            OUT[0] = currentOut;
+            OUT.Value = currentOut;
 
             // 5. 品质传递逻辑
             if (QualityT == 0) // NoTransfer: 不传递品质，输出始终为Good

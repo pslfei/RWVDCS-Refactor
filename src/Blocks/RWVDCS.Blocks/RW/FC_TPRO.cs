@@ -90,5 +90,8 @@ namespace RWVDCS.Blocks.RW
 		[PinType(PinTypes.Internal)]
 		public float timerAcc = 0;
 
-	}
+        [PinType(PinTypes.Internal)]
+        public float rate = 0;
+
+    }
 }

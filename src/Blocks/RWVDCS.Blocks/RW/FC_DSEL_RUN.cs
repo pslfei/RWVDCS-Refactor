@@ -7,7 +7,7 @@ namespace RWVDCS.Blocks.RW
 	{
 		protected override void Run(ICommand cmd) 
 		{
-			if (SEL)
+			if (!SEL)
 			{
 				OUT[0] = X1;
 			}

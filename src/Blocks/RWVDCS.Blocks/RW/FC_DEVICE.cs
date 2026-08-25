@@ -309,5 +309,8 @@ namespace RWVDCS.Blocks.RW
         [PinType(PinTypes.Internal)]
         public bool manualForbid = false;
 
+        [PinType(PinTypes.Internal)]
+        public bool middleStopActive = false;
+
     }
 }

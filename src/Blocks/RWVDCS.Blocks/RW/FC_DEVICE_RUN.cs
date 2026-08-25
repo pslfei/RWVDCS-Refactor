@@ -229,9 +229,21 @@ namespace RWVDCS.Blocks.RW
                 if (!NoCon)
                 {
                     // 重入保护：行程中再次收到同方向指令会重置超时计时器，导致 OpFl 永不触发
-                    if (edgeCON & EnOn && !onCmdActive) StartOnCmd();
-                    else if (edgeCOF & EnOff && !offCmdActive) StartOffCmd();
-                    else if (edgeCSP & EnStp && StopR && !stpCmdActive) StartStpCmd();
+                    if (edgeCON & EnOn && !onCmdActive)
+                    {
+                        middleStopActive = false;
+                        StartOnCmd();
+                    }
+                    else if (edgeCOF & EnOff && !offCmdActive)
+                    {
+                        middleStopActive = false;
+                        StartOffCmd();
+                    }
+                    else if (edgeCSP & EnStp && !stpCmdActive)
+                    {
+                        middleStopActive = onCmdActive || offCmdActive;
+                        StartStpCmd();
+                    }
                 }
             }
 
@@ -243,6 +255,8 @@ namespace RWVDCS.Blocks.RW
                 // 保护指令优先 (无视手自动与允许条件)
                 if (curPOn || curPOff)
                 {
+                    // 保护动作保持最高优先级，可以解除人工中停锁存。
+                    middleStopActive = false;
                     if (curPOn && !curPOff) StartOnCmd();
                     else if (curPOff && !curPOn) StartOffCmd();
                     else
@@ -252,7 +266,8 @@ namespace RWVDCS.Blocks.RW
                     }
                 }
                 // 自动指令 (处于自动模式下，并需满足允许条件)
-                else if (!MA)
+                // 人工中停锁存期间不重复接受持续电平的自动请求，避免设备自行运行到终点。
+                else if (!MA && !middleStopActive)
                 {
                     bool wantOn = AOn & EnOn;
                     bool wantOff = AOff & EnOff;
@@ -319,15 +334,20 @@ namespace RWVDCS.Blocks.RW
             if (AOn) pack |= (1u << 7);
             if (AOff) pack |= (1u << 8);
             if (AStp) pack |= (1u << 9);
-            if (curFBOn) pack |= (1u << 10);
-            if (curFBOff) pack |= (1u << 11);
+            // 行程中或人工中停时不显示端点状态：前者等待新反馈到位，后者避免旧反馈
+            // 在“正在开/关”消失后重新显示成“已开/已关”。
+            bool suppressEndpointState = middleStopActive || onCmdActive || offCmdActive;
+            if (curFBOn && !suppressEndpointState) pack |= (1u << 10);
+            if (curFBOff && !suppressEndpointState) pack |= (1u << 11);
             if (curFBStp) pack |= (1u << 12);
             if (curLoc) pack |= (1u << 13);
             if (FBat) pack |= (1u << 14);
             if (FDev) pack |= (1u << 15);
             if (On) pack |= (1u << 16);
             if (Off) pack |= (1u << 17);
-            if (Stp) pack |= (1u << 18);
+            // 人工中停状态独立于 Stp 的脉冲/长信号输出方式保持，直到新的人工开、关
+            // 或保护动作解除；普通开、关行程中则抑制“已停”显示。
+            if (middleStopActive || ((bool)Stp && !onCmdActive && !offCmdActive)) pack |= (1u << 18);
             if (MA) pack |= (1u << 19);
             if (Debug) pack |= (1u << 20);
             if (FBFl) pack |= (1u << 21);
@@ -371,7 +391,9 @@ namespace RWVDCS.Blocks.RW
             onToverTimer = 0;
 
             offCmdActive = false;
-            if (StopR) stpCmdActive = false;
+            stpCmdActive = false;
+            stpTimer = 0;
+            stpToverTimer = 0;
         }
 
         private void StartOffCmd()
@@ -385,22 +407,29 @@ namespace RWVDCS.Blocks.RW
             offToverTimer = 0;
 
             onCmdActive = false;
-            if (StopR) stpCmdActive = false;
+            stpCmdActive = false;
+            stpTimer = 0;
+            stpToverTimer = 0;
         }
 
         private void StartStpCmd()
         {
-            if (!StopR) return;
             Stp[0] = true;
             On[0] = false;
             Off[0] = false;
 
-            stpCmdActive = true;
+            // StopR=0 时 Stp 是常 1 接点，中停仍需作为状态指令立即终止开/关行程；
+            // 仅 StopR=1 时才按普通输出指令等待 FBStp 并进行超时判断。
+            stpCmdActive = StopR;
             stpTimer = 0;
             stpToverTimer = 0;
 
             onCmdActive = false;
             offCmdActive = false;
+            onTimer = 0;
+            offTimer = 0;
+            onToverTimer = 0;
+            offToverTimer = 0;
         }
     }
 }

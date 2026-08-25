@@ -18,7 +18,6 @@ namespace RWVDCS.Blocks.RW
 			BAD[0] = isBad;
 
 			// 2. 飞升速率计算 (°C/min)
-			float rate = 0;
 			if (cycle > 0 && oldX != 0)
 				rate = Math.Abs(currentX - oldX) / (cycle / 60.0f);
 			oldX = currentX;

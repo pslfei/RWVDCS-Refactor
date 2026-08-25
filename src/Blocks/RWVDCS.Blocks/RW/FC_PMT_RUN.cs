@@ -50,7 +50,7 @@ namespace RWVDCS.Blocks.RW
             OUT[0] = outState;
             // 4. 将 uint 赋值给 LA(浮点型) 
             // 17位的最大值为 0x1FFFF(131071)，32位 IEEE754 float 可以完全无损精度地表示该整数
-            PACK[0] = packValue;
+            PACK.Value = packValue;
         }
     }
 }

@@ -46,7 +46,7 @@ namespace RWVDCS.Blocks.RW
             if (B31) tempVal |= (1u << 31);
 
             // 2. 将结果写回输出
-            OUT[0] = tempVal;
+            OUT.Value = tempVal;
 
             // 3. 品质传递逻辑
             if (QualityT == 0) // NoTransfer: 不传递品质，输出始终为Good
