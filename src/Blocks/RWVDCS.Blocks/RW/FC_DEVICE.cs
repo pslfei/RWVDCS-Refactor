@@ -135,7 +135,7 @@ namespace RWVDCS.Blocks.RW
         public LD Off = new LD(QualityTypes.Good, false, false, false, 0, false);
 
         [PinType(PinTypes.Output)]
-        [PinDisplay("暂停指令输出")]
+        [PinDisplay("停止状态输出：开关行程中为0，无开关行程或中停时为1")]
         public LD Stp = new LD(QualityTypes.Good, false, false, false, 0, true);
 
         [PinType(PinTypes.Output)]
@@ -195,7 +195,7 @@ namespace RWVDCS.Blocks.RW
         public UInt32 ResetM = 0;
 
         [PinType(PinTypes.Constant)]
-        [PinDisplay("输出On,Off,Stop信号的有效长度，单位：秒")]
+        [PinDisplay("输出On,Off信号的有效长度，单位：秒")]
         public double SetT = 5.0;
 
         [PinType(PinTypes.Constant)]
@@ -203,7 +203,7 @@ namespace RWVDCS.Blocks.RW
         public UInt32 OutPri = 1;
 
         [PinType(PinTypes.Constant)]
-        [PinDisplay("Stop指令复位方式  0=Stop输出永远为1  1=Stop同On/Off一样定义输出")]
+        [PinDisplay("Stop反馈监视方式  0=不等待FBStp  1=等待FBStp并按Tover判断停止操作失败")]
         public bool StopR = false;
 
         [PinType(PinTypes.Constant)]

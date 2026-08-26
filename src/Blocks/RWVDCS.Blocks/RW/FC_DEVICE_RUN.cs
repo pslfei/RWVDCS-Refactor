@@ -29,17 +29,16 @@ namespace RWVDCS.Blocks.RW
             if (firstRun)
             {
                 MA[0] = true; // 启动时默认进入手动方式
+                Stp[0] = true;
                 if (!OutM)
                 {
                     On[0] = false;
                     Off[0] = false;
-                    Stp[0] = !StopR;
                 }
                 else
                 {
                     On[0] = curFBOn;
                     Off[0] = curFBOff;
-                    Stp[0] = StopR ? curFBStp : true;
                 }
                 firstRun = false;
             }
@@ -184,16 +183,13 @@ namespace RWVDCS.Blocks.RW
                 {
                     stpCmdActive = false;
                     OpFlStp[0] = false;
-                    if (ResetM != 2) Stp[0] = false;
                 }
                 else
                 {
-                    if (!OutM && stpTimer >= SetT) Stp[0] = false;
                     if (stpToverTimer >= effectiveTover && !curFBStp)
                     {
                         OpFlStp[0] = true;
                         stpCmdActive = false;
-                        if (ResetM == 0) Stp[0] = false;
                     }
                 }
             }
@@ -257,12 +253,12 @@ namespace RWVDCS.Blocks.RW
                 {
                     // 保护动作保持最高优先级，可以解除人工中停锁存。
                     middleStopActive = false;
-                    if (curPOn && !curPOff) StartOnCmd();
-                    else if (curPOff && !curPOn) StartOffCmd();
+                    if (curPOn && !curPOff) ApplyProtectionOn(curFBOn);
+                    else if (curPOff && !curPOn) ApplyProtectionOff(curFBOff);
                     else
                     {
-                        if (OutPri == 0) StartOnCmd();
-                        else StartOffCmd();
+                        if (OutPri == 0) ApplyProtectionOn(curFBOn);
+                        else ApplyProtectionOff(curFBOff);
                     }
                 }
                 // 自动指令 (处于自动模式下，并需满足允许条件)
@@ -301,7 +297,12 @@ namespace RWVDCS.Blocks.RW
                 }
             }
 
-            if (!StopR) Stp[0] = true;
+            // Stp 是“当前已停止”的唯一输出：只有真实开/关行程中为 false；
+            // 中停、端点反馈到位或没有开关行程时均为 true。Bit18 直接镜像该值。
+            bool strokeOn = onCmdActive && !curFBOn;
+            bool strokeOff = offCmdActive && !curFBOff;
+            bool inStroke = strokeOn || strokeOff;
+            Stp[0] = !inStroke;
 
             // ================== 8. 综合状态标志输出 ==================
             Totp[0] = curPOn || curPOff | Trip;
@@ -345,9 +346,7 @@ namespace RWVDCS.Blocks.RW
             if (FDev) pack |= (1u << 15);
             if (On) pack |= (1u << 16);
             if (Off) pack |= (1u << 17);
-            // 人工中停状态独立于 Stp 的脉冲/长信号输出方式保持，直到新的人工开、关
-            // 或保护动作解除；普通开、关行程中则抑制“已停”显示。
-            if (middleStopActive || ((bool)Stp && !onCmdActive && !offCmdActive)) pack |= (1u << 18);
+            if (Stp) pack |= (1u << 18);
             if (MA) pack |= (1u << 19);
             if (Debug) pack |= (1u << 20);
             if (FBFl) pack |= (1u << 21);
@@ -365,9 +364,6 @@ namespace RWVDCS.Blocks.RW
 
             // Bit28~Bit30: 动作行程中状态
             // 与 Bit10/Bit11 (已开/已关) 互斥：反馈到位即抑制行程中位，避免 HMI 显示叠加
-            bool strokeOn = onCmdActive && !curFBOn;
-            bool strokeOff = offCmdActive && !curFBOff;
-            bool inStroke = strokeOn || strokeOff;
             if (inStroke) pack |= (1u << 28);
             if (strokeOn) pack |= (1u << 29);
             if (strokeOff) pack |= (1u << 30);
@@ -380,11 +376,61 @@ namespace RWVDCS.Blocks.RW
 
         
         // ================== 辅助控制函数 ==================
+        private void ApplyProtectionOn(bool feedbackOn)
+        {
+            if (feedbackOn)
+            {
+                CompleteProtectionTarget(protectionOn: true);
+                return;
+            }
+
+            // 持续保护电平表示目标位置，不是每周期重新触发；已有开动作时保持计时。
+            if (!onCmdActive)
+                StartOnCmd();
+        }
+
+        private void ApplyProtectionOff(bool feedbackOff)
+        {
+            if (feedbackOff)
+            {
+                CompleteProtectionTarget(protectionOn: false);
+                return;
+            }
+
+            if (!offCmdActive)
+                StartOffCmd();
+        }
+
+        private void CompleteProtectionTarget(bool protectionOn)
+        {
+            // 保护目标已满足后方向输出必须释放；该规则不受普通命令 ResetM=2 影响。
+            On[0] = false;
+            Off[0] = false;
+            Stp[0] = true;
+
+            onCmdActive = false;
+            offCmdActive = false;
+            stpCmdActive = false;
+
+            onTimer = 0;
+            offTimer = 0;
+            stpTimer = 0;
+            onToverTimer = 0;
+            offToverTimer = 0;
+            stpToverTimer = 0;
+
+            if (protectionOn)
+                OpFlOn[0] = false;
+            else
+                OpFlOff[0] = false;
+            OpFl[0] = OpFlOn | OpFlOff | OpFlStp;
+        }
+
         private void StartOnCmd()
         {
             On[0] = true;
             Off[0] = false;
-            if (StopR) Stp[0] = false;
+            Stp[0] = false;
 
             onCmdActive = true;
             onTimer = 0;
@@ -400,7 +446,7 @@ namespace RWVDCS.Blocks.RW
         {
             Off[0] = true;
             On[0] = false;
-            if (StopR) Stp[0] = false;
+            Stp[0] = false;
 
             offCmdActive = true;
             offTimer = 0;
@@ -418,8 +464,7 @@ namespace RWVDCS.Blocks.RW
             On[0] = false;
             Off[0] = false;
 
-            // StopR=0 时 Stp 是常 1 接点，中停仍需作为状态指令立即终止开/关行程；
-            // 仅 StopR=1 时才按普通输出指令等待 FBStp 并进行超时判断。
+            // Stp 始终表示当前停止状态；StopR 只决定是否等待 FBStp 并判断停止操作失败。
             stpCmdActive = StopR;
             stpTimer = 0;
             stpToverTimer = 0;
