@@ -21,7 +21,17 @@ namespace RWVDCS.RemotingAdapter
         public string ValueType;  // /values/describe 定型结果；null=未找到
         public bool Found;
         public bool IomapOwned;
+        /// <summary>
+        /// 名称显式带 IOMapDirection2_ 前缀，属于 IOMAP→Host 的稳定过程量；
+        /// 只有这类值允许在 Host 重启后自动重放，避免重放普通 HMI 脉冲命令。
+        /// </summary>
+        public bool IomapReplayEligible;
         public CompatValueKind PipeValueKind;
+        /// <summary>Adapter 生命周期内最后一次成功写入 Host 的 IOMAP 值。</summary>
+        public bool HasLastIomapValue;
+        public object LastIomapValue;
+        public DateTime LastIomapWriteUtc;
+        public int LastIomapWriterClientHandle;
     }
 
     internal sealed class NormalizedSubscriptionName
@@ -49,6 +59,7 @@ namespace RWVDCS.RemotingAdapter
         public int CallbackBusy;
         /// <summary>慢回调期间按 Handle 合并的最新值。</summary>
         public readonly Dictionary<long, object> PendingChanges = new Dictionary<long, object>();
+        public int ConsecutiveCallbackFailures;
     }
 
     /// <summary>
@@ -58,6 +69,8 @@ namespace RWVDCS.RemotingAdapter
     internal sealed class SubscriptionRegistry : IDisposable
     {
         private const int DescribeBatchSize = 512;
+        private const int IomapReplayBatchSize = 2048;
+        private const int CallbackFailureDetachThreshold = 5;
         private const string IomapPointNamePrefix = "IOMapDirection2_";
         private const string IomapClientInfoPrefix = "IOMAP_";
 
@@ -100,7 +113,7 @@ namespace RWVDCS.RemotingAdapter
                 _pipe.DataChanged += OnPipeDataChanged;
                 _pipe.RuntimeChanging += generation => Log?.Invoke($"Host Runtime 即将换代，generation={generation}");
                 _pipe.RuntimeRebound += OnPipeRuntimeRebound;
-                _pipe.EventChannelReconnected += OnPipeEventChannelReconnected;
+                _pipe.EventChannelConnected += OnPipeEventChannelConnected;
             }
             // 写值可能每秒调用数百/数千次，逐次 Console.WriteLine 会反过来成为性能瓶颈。
             // 这里只做无锁计数，并由定时器每秒输出一次聚合统计。
@@ -255,7 +268,13 @@ namespace RWVDCS.RemotingAdapter
                         SubscriptionEntry entry;
                         if (!_byName.TryGetValue(n.Original, out entry))
                         {
-                            entry = new SubscriptionEntry { Handle = _nextHandle++, Name = n.RestName, IomapOwned = n.IomapOwned };
+                            entry = new SubscriptionEntry
+                            {
+                                Handle = _nextHandle++,
+                                Name = n.RestName,
+                                IomapOwned = n.IomapOwned,
+                                IomapReplayEligible = n.IomapOwned,
+                            };
                             _byName[n.Original] = entry;
                             _byHandle[entry.Handle] = entry;
                         }
@@ -263,6 +282,7 @@ namespace RWVDCS.RemotingAdapter
                         {
                             entry.Name = n.RestName;
                             entry.IomapOwned |= n.IomapOwned;
+                            entry.IomapReplayEligible |= n.IomapOwned;
                         }
 
                         JsonElement d;
@@ -289,7 +309,10 @@ namespace RWVDCS.RemotingAdapter
                         continue;
                     }
                     if (n.IomapOwned)
+                    {
                         entry.IomapOwned = true;
+                        entry.IomapReplayEligible = true;
+                    }
                     result[i] = entry.Found ? entry.Handle : -1;
                     if (entry.Found && entry.IomapOwned)
                         iomapNamesToMark.Add(entry.Name);
@@ -307,51 +330,99 @@ namespace RWVDCS.RemotingAdapter
         {
             var result = new long[names.Length];
             for (int i = 0; i < result.Length; i++) result[i] = -1;
+            // 先登记订阅意图，再访问 Host。这样 Adapter 先启动、Host 后启动或 Host
+            // 重启窗口内的订阅不会因为一次管道失败而永久丢失。
+            SubscriptionEntry[] entries = RegisterPipeSubscriptionIntents(clientHandle, names);
             try
             {
                 PipeSubscribeItem[] items = PipeCall(() => _pipe.Subscribe(clientHandle, names));
                 int count = Math.Min(names.Length, items.Length);
                 lock (_gate)
                 {
-                    ClientSession session;
-                    _sessions.TryGetValue(clientHandle, out session);
                     for (int i = 0; i < count; i++)
                     {
-                        if (names[i] == null || !items[i].Found || items[i].Handle < 0)
+                        SubscriptionEntry entry = entries[i];
+                        if (entry == null)
                             continue;
 
-                        NormalizedSubscriptionName normalized = NormalizeSubscriptionName(names[i]);
-                        SubscriptionEntry entry;
-                        if (!_byName.TryGetValue(names[i], out entry))
-                        {
-                            entry = new SubscriptionEntry
-                            {
-                                Handle = _nextHandle++,
-                                OriginalName = names[i],
-                            };
-                            _byName[names[i]] = entry;
-                            _byHandle[entry.Handle] = entry;
-                        }
-                        if (entry.BackendHandle > 0 && entry.BackendHandle != items[i].Handle)
+                        if (entry.BackendHandle > 0)
                             _byBackendHandle.Remove(entry.BackendHandle);
-                        entry.BackendHandle = items[i].Handle;
-                        entry.Name = normalized.RestName;
-                        entry.Found = true;
-                        entry.IomapOwned |= normalized.IomapOwned;
+                        entry.BackendHandle = items[i].Found && items[i].Handle > 0
+                            ? items[i].Handle
+                            : -1;
+                        entry.Found = items[i].Found && entry.BackendHandle > 0;
                         entry.PipeValueKind = items[i].ValueKind;
                         entry.ValueType = items[i].ValueKind.ToString();
-                        _byBackendHandle[entry.BackendHandle] = entry;
-                        result[i] = entry.Handle;
-                        if (session != null && session.Set.Add(entry.Handle))
-                            session.Order.Add(entry.Handle);
+                        if (entry.Found)
+                        {
+                            _byBackendHandle[entry.BackendHandle] = entry;
+                            result[i] = entry.Handle;
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Log?.Invoke($"二进制批量订阅失败：{ex.Message}");
+                int retained = 0;
+                lock (_gate)
+                {
+                    for (int i = 0; i < entries.Length; i++)
+                    {
+                        SubscriptionEntry entry = entries[i];
+                        if (entry == null)
+                            continue;
+                        if (entry.BackendHandle > 0)
+                            _byBackendHandle.Remove(entry.BackendHandle);
+                        entry.BackendHandle = -1;
+                        entry.Found = false;
+                        // 暂时不可用与永久不存在必须区分：返回稳定的 Edge Handle，
+                        // Host 恢复后同一 Handle 会自动绑定到新 BackendHandle。
+                        result[i] = entry.Handle;
+                        retained++;
+                    }
+                }
+                Log?.Invoke($"二进制批量订阅失败，已保留 {retained} 项待恢复订阅：{ex.Message}");
             }
             return result;
+        }
+
+        private SubscriptionEntry[] RegisterPipeSubscriptionIntents(int clientHandle, string[] names)
+        {
+            var entries = new SubscriptionEntry[names.Length];
+            lock (_gate)
+            {
+                ClientSession session;
+                _sessions.TryGetValue(clientHandle, out session);
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string originalName = names[i];
+                    if (originalName == null)
+                        continue;
+
+                    NormalizedSubscriptionName normalized = NormalizeSubscriptionName(originalName);
+                    SubscriptionEntry entry;
+                    if (!_byName.TryGetValue(originalName, out entry))
+                    {
+                        entry = new SubscriptionEntry
+                        {
+                            Handle = _nextHandle++,
+                            BackendHandle = -1,
+                            OriginalName = originalName,
+                        };
+                        _byName[originalName] = entry;
+                        _byHandle[entry.Handle] = entry;
+                    }
+
+                    entry.OriginalName = originalName;
+                    entry.Name = normalized.RestName;
+                    entry.IomapOwned |= normalized.IomapOwned;
+                    entry.IomapReplayEligible |= normalized.IomapOwned;
+                    entries[i] = entry;
+                    if (session != null && session.Set.Add(entry.Handle))
+                        session.Order.Add(entry.Handle);
+                }
+            }
+            return entries;
         }
 
         public void Unsubscribe(int clientHandle, long[] handles)
@@ -496,7 +567,8 @@ namespace RWVDCS.RemotingAdapter
                 bool[] pipeResult;
                 bool error = false;
                 long[] backendHandles = MapToBackend(handles);
-                try { pipeResult = PipeCall(() => _pipe.Write(clientHandle, backendHandles, values, BuildClientInfo(clientHandle, userInfo))); }
+                string pipeClientInfo = BuildClientInfo(clientHandle, userInfo);
+                try { pipeResult = PipeCall(() => _pipe.Write(clientHandle, backendHandles, values, pipeClientInfo)); }
                 catch (Exception ex)
                 {
                     error = true;
@@ -504,6 +576,7 @@ namespace RWVDCS.RemotingAdapter
                     pipeResult = result;
                 }
                 watch.Stop();
+                CacheSuccessfulIomapWrites(clientHandle, handles, values, pipeResult, pipeClientInfo);
                 RecordWritePerformance(handles.Length, pipeResult, error, watch.ElapsedTicks);
                 //if (!error)
                 //    LogPipeWriteFailures(clientHandle, handles, backendHandles, pipeResult);
@@ -549,8 +622,47 @@ namespace RWVDCS.RemotingAdapter
                 Log?.Invoke($"批量写失败：{ex.Message}");
             }
             restWatch.Stop();
+            CacheSuccessfulIomapWrites(clientHandle, handles, values, result, clientInfo);
             RecordWritePerformance(handles.Length, result, restError, restWatch.ElapsedTicks);
             return result;
+        }
+
+        private void CacheSuccessfulIomapWrites(
+            int clientHandle,
+            long[] handles,
+            object[] values,
+            bool[] results,
+            string clientInfo)
+        {
+            bool iomapClient = IsIomapClientInfo(clientInfo);
+            int count = Math.Min(handles == null ? 0 : handles.Length,
+                Math.Min(values == null ? 0 : values.Length, results == null ? 0 : results.Length));
+            DateTime writtenAtUtc = DateTime.UtcNow;
+            lock (_gate)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    SubscriptionEntry entry;
+                    if (!results[i] || values[i] == null || !_byHandle.TryGetValue(handles[i], out entry))
+                        continue;
+
+                    if (iomapClient)
+                        entry.IomapOwned = true;
+                    if (!entry.IomapReplayEligible)
+                        continue;
+
+                    entry.HasLastIomapValue = true;
+                    entry.LastIomapValue = CloneIomapValue(values[i]);
+                    entry.LastIomapWriteUtc = writtenAtUtc;
+                    entry.LastIomapWriterClientHandle = clientHandle;
+                }
+            }
+        }
+
+        private static object CloneIomapValue(object value)
+        {
+            var array = value as Array;
+            return array == null ? value : array.Clone();
         }
 
         /// <summary>
@@ -829,11 +941,32 @@ namespace RWVDCS.RemotingAdapter
                     try
                     {
                         session.Callback.InformDataChange(hArr, vArr);
+                        lock (_gate)
+                        {
+                            if (_sessions.ContainsKey(session.ClientHandle))
+                                session.ConsecutiveCallbackFailures = 0;
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Log?.Invoke($"客户端 #{session.ClientHandle} 回调失败，移除会话：{ex.Message}");
-                        Detach(session.ClientHandle);
+                        int failures;
+                        lock (_gate)
+                        {
+                            failures = ++session.ConsecutiveCallbackFailures;
+                            // LastSent 已在投递前更新；失败时撤销本批基线，使下一轮能够重试。
+                            for (int i = 0; i < hArr.Length; i++)
+                                session.LastSent.Remove(hArr[i]);
+                        }
+                        if (failures >= CallbackFailureDetachThreshold)
+                        {
+                            Log?.Invoke($"客户端 #{session.ClientHandle} 连续 {failures} 次回调失败，移除会话：{ex.Message}");
+                            Detach(session.ClientHandle);
+                        }
+                        else
+                        {
+                            Log?.Invoke($"客户端 #{session.ClientHandle} 回调失败（{failures}/{CallbackFailureDetachThreshold}），"
+                                        + $"保留会话等待下一轮重试：{ex.Message}");
+                        }
                     }
                     finally
                     {
@@ -892,13 +1025,50 @@ namespace RWVDCS.RemotingAdapter
                 try
                 {
                     session.Callback.InformDataChange(handles, values);
+                    lock (_gate)
+                    {
+                        if (_sessions.ContainsKey(session.ClientHandle))
+                            session.ConsecutiveCallbackFailures = 0;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log?.Invoke($"客户端 #{session.ClientHandle} 回调失败，移除会话：{ex.Message}");
-                    Detach(session.ClientHandle);
-                    lock (_gate) session.CallbackBusy = 0;
-                    return;
+                    int failures;
+                    int retryDelayMs;
+                    bool detach;
+                    lock (_gate)
+                    {
+                        if (!_sessions.ContainsKey(session.ClientHandle))
+                        {
+                            session.CallbackBusy = 0;
+                            return;
+                        }
+
+                        failures = ++session.ConsecutiveCallbackFailures;
+                        detach = failures >= CallbackFailureDetachThreshold;
+                        if (detach)
+                        {
+                            session.CallbackBusy = 0;
+                        }
+                        else
+                        {
+                            // 失败批次重新合并，下一次重试时仍会携带最新值。
+                            for (int i = 0; i < handles.Length; i++)
+                                session.PendingChanges[handles[i]] = values[i];
+                        }
+                        retryDelayMs = Math.Min(5000, 500 << Math.Min(failures - 1, 3));
+                    }
+
+                    if (detach)
+                    {
+                        Log?.Invoke($"客户端 #{session.ClientHandle} 连续 {failures} 次回调失败，移除会话：{ex.Message}");
+                        Detach(session.ClientHandle);
+                        return;
+                    }
+
+                    Log?.Invoke($"客户端 #{session.ClientHandle} 回调失败（{failures}/{CallbackFailureDetachThreshold}），"
+                                + $"{retryDelayMs} ms 后重试并保留会话：{ex.Message}");
+                    Thread.Sleep(retryDelayMs);
                 }
             }
         }
@@ -920,17 +1090,18 @@ namespace RWVDCS.RemotingAdapter
                 }
             }
             Log?.Invoke($"Host Runtime 重绑定完成：generation={generation}, invalid={invalidHandles.Length}");
+            QueueIomapReplay($"RuntimeRebound generation={generation}");
         }
 
-        private void OnPipeEventChannelReconnected()
+        private void OnPipeEventChannelConnected(bool reconnected)
         {
-            // 事件管道是 Host 重启的最早可观测信号。后台重建请求管道、Host 会话及名称订阅，
-            // 使只依赖推送、暂时没有主动读请求的老客户端也能自动恢复。
+            // 首次连接也必须检查恢复代次，以覆盖 Adapter 先启动、Host 后启动的场景；
+            // 曾连接过则强制重建请求管道，避免 NamedPipe.IsConnected 暂时仍返回 true。
             Task.Run(() =>
             {
                 try
                 {
-                    EnsurePipeSessions(true);
+                    EnsurePipeSessions(reconnected);
                 }
                 catch (Exception ex)
                 {
@@ -1036,9 +1207,91 @@ namespace RWVDCS.RemotingAdapter
                     if (session.Paused)
                         _pipe.SetPaused(session.ClientHandle, true);
                 }
+                ReplayCachedIomapValues(sessions, $"HostReconnect epoch={epoch}");
                 _pipeReplayEpoch = epoch;
                 Log?.Invoke($"Host 会话和订阅已恢复：epoch={epoch}, sessions={sessions.Length}");
             }
+        }
+
+        private void QueueIomapReplay(string reason)
+        {
+            if (_pipe == null)
+                return;
+            Task.Run(() =>
+            {
+                try
+                {
+                    lock (_pipeRecoveryGate)
+                    {
+                        if (!_pipe.TryConnect())
+                            throw new IOException("Host 二进制请求管道不可用");
+                        ClientSession[] sessions;
+                        lock (_gate) sessions = _sessions.Values.ToArray();
+                        ReplayCachedIomapValues(sessions, reason);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log?.Invoke($"IOMAP 缓存值自动恢复失败（{reason}）：{ex.Message}");
+                }
+            });
+        }
+
+        private void ReplayCachedIomapValues(ClientSession[] sessions, string reason)
+        {
+            var replayed = new HashSet<long>();
+            int cached = 0;
+            int succeeded = 0;
+            int failed = 0;
+
+            foreach (ClientSession session in sessions)
+            {
+                SubscriptionEntry[] entries;
+                lock (_gate)
+                {
+                    entries = session.Order
+                        .Select(h => _byHandle.TryGetValue(h, out var e) ? e : null)
+                        .Where(e => e != null
+                                    && e.Found
+                                    && e.BackendHandle > 0
+                                    && e.IomapReplayEligible
+                                    && e.HasLastIomapValue
+                                    && replayed.Add(e.Handle))
+                        .ToArray();
+                }
+
+                cached += entries.Length;
+                for (int start = 0; start < entries.Length; start += IomapReplayBatchSize)
+                {
+                    int count = Math.Min(IomapReplayBatchSize, entries.Length - start);
+                    var backendHandles = new long[count];
+                    var values = new object[count];
+                    lock (_gate)
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            SubscriptionEntry entry = entries[start + i];
+                            backendHandles[i] = entry.BackendHandle;
+                            values[i] = CloneIomapValue(entry.LastIomapValue);
+                        }
+                    }
+
+                    bool[] results = _pipe.Write(
+                        session.ClientHandle,
+                        backendHandles,
+                        values,
+                        BuildClientInfo(session.ClientHandle, null));
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (i < results.Length && results[i])
+                            succeeded++;
+                        else
+                            failed++;
+                    }
+                }
+            }
+
+            Log?.Invoke($"IOMAP 缓存值恢复完成（{reason}）：cached={cached}, success={succeeded}, failed={failed}");
         }
 
         private static NormalizedSubscriptionName NormalizeSubscriptionName(string name)
@@ -1134,7 +1387,7 @@ namespace RWVDCS.RemotingAdapter
             {
                 _pipe.DataChanged -= OnPipeDataChanged;
                 _pipe.RuntimeRebound -= OnPipeRuntimeRebound;
-                _pipe.EventChannelReconnected -= OnPipeEventChannelReconnected;
+                _pipe.EventChannelConnected -= OnPipeEventChannelConnected;
                 _pipe.Dispose();
             }
             if (_poller != null && _poller.IsAlive)

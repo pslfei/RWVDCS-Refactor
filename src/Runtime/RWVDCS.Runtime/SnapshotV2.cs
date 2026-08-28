@@ -168,6 +168,7 @@ public static class SnapshotV2
     private static int SaveDpu(DpuRuntime dpu, string path)
     {
         var arena = dpu.Arena;
+        using var arenaAccess = arena.AcquireAccessLease();
         byte[] baseline = dpu.DecompressInitialData();
         var current = arena.DataRegion;
 
@@ -259,10 +260,10 @@ public static class SnapshotV2
 
             foreach (var rec in ReadRecords(Path.Combine(directory, entry.File)))
             {
-                var slotSpan = dpu.Arena.GetSlotSpan(rec.Sid);
-                if (rec.Bytes.Length != slotSpan.Length)
+                int slotLength = dpu.Arena.GetByteLength(rec.Sid);
+                if (rec.Bytes.Length != slotLength)
                     throw new InvalidDataException($"槽长不符：{dpu.Name} sid={rec.Sid}");
-                rec.Bytes.CopyTo(slotSpan);
+                dpu.Arena.CopySlotFrom(rec.Sid, rec.Bytes, rec.Bytes.Length);
                 if (rec.Kind == RecordBlock) report.BlocksRawCopied++;
                 else report.PointsApplied++;
             }
@@ -345,15 +346,15 @@ public static class SnapshotV2
             return;
         }
 
-        var target = slot.Arena.GetSlotSpan(slot.Sid);
-        if (target.Length != rec.Bytes.Length)
+        int targetLength = slot.Arena.GetByteLength(slot.Sid);
+        if (targetLength != rec.Bytes.Length)
         {
             // 点类型变了（LA↔LD 等）：布局不同不硬套
             report.PointsSkipped++;
             return;
         }
 
-        rec.Bytes.CopyTo(target);
+        slot.Arena.CopySlotFrom(slot.Sid, rec.Bytes, rec.Bytes.Length);
         report.PointsApplied++;
     }
 
@@ -374,11 +375,13 @@ public static class SnapshotV2
             oldCatalog != null && oldCatalog.LayoutHash == newSchema.LayoutHash &&
             rec.Bytes.Length >= newSchema.ByteLength)
         {
-            var slotSpan = dpu.Arena.GetSlotSpan(cmd.StateSid);
-            rec.Bytes.AsSpan(0, Math.Min(rec.Bytes.Length, slotSpan.Length)).CopyTo(slotSpan);
+            int slotLength = dpu.Arena.GetByteLength(cmd.StateSid);
+            int copyLength = Math.Min(rec.Bytes.Length, slotLength);
+            dpu.Arena.CopySlotFrom(cmd.StateSid, rec.Bytes.AsSpan(0, copyLength), copyLength);
             var codec = BlockStateCodec.For(cmd.Fc.GetType());
             EnsureCapacity(ref scratch, codec.Schema.ByteLength);
-            dpu.Arena.GetSlotSpan(cmd.StateSid).CopyTo(scratch);
+            dpu.Arena.CopySlotTo(cmd.StateSid, scratch.AsSpan(0, codec.Schema.ByteLength),
+                codec.Schema.ByteLength);
             codec.Load(cmd.Fc, scratch, 0);
             report.BlocksRawCopied++;
             return;
@@ -415,7 +418,8 @@ public static class SnapshotV2
         codec2.Load(cmd.Fc, scratch, 0);
         // 同步刷回 Arena 槽，保持槽与 live 一致
         codec2.Flush(cmd.Fc, scratch, 0);
-        scratch.AsSpan(0, codec2.Schema.ByteLength).CopyTo(dpu.Arena.GetSlotSpan(cmd.StateSid));
+        dpu.Arena.CopySlotFrom(cmd.StateSid, scratch.AsSpan(0, codec2.Schema.ByteLength),
+            codec2.Schema.ByteLength);
 
         if (moved > 0)
             report.BlocksFieldConverted++;

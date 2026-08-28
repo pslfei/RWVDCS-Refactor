@@ -78,7 +78,7 @@ public static class PointFieldAccess
 
         if (slot.Kind == PointKind.LA)
         {
-            ref readonly LA la = ref slot.Arena.GetRef<LA>(slot.Sid);
+            LA la = slot.Arena.ReadSlot<LA>(slot.Sid);
             result.Add(new PointField(nameof(LA.CurOverState), nameof(Int32), la.CurOverState));
         }
 
@@ -96,7 +96,7 @@ public static class PointFieldAccess
         if (slot.Kind == PointKind.LA
             && fieldName.Equals(nameof(LA.CurOverState), StringComparison.OrdinalIgnoreCase))
         {
-            ref readonly LA la = ref slot.Arena.GetRef<LA>(slot.Sid);
+            LA la = slot.Arena.ReadSlot<LA>(slot.Sid);
             value = la.CurOverState;
             fieldType = typeof(int);
             return true;
@@ -237,34 +237,54 @@ public static class PointFieldAccess
             {
                 case PointKind.LA:
                 {
-                    ref var la = ref slot.Arena.GetRef<LA>(slot.Sid);
-                    if (forced && forceValue != null)
-                        la.ForceValue = float.Parse(forceValue, CultureInfo.InvariantCulture);
-                    la.IsForced = (byte)(forced ? 1 : 0);
+                    float? parsed = forced && forceValue != null
+                        ? float.Parse(forceValue, CultureInfo.InvariantCulture)
+                        : null;
+                    slot.Arena.UpdateSlot<LA>(slot.Sid, (ref LA la) =>
+                    {
+                        if (parsed.HasValue)
+                            la.ForceValue = parsed.Value;
+                        la.IsForced = (byte)(forced ? 1 : 0);
+                    });
                     return true;
                 }
                 case PointKind.LD:
                 {
-                    ref var ld = ref slot.Arena.GetRef<LD>(slot.Sid);
-                    if (forced && forceValue != null)
-                        ld.ForceValue = forceValue is "1" or "true" or "True";
-                    ld.IsForced = (byte)(forced ? 1 : 0);
+                    bool? parsed = forced && forceValue != null
+                        ? forceValue is "1" or "true" or "True"
+                        : null;
+                    slot.Arena.UpdateSlot<LD>(slot.Sid, (ref LD ld) =>
+                    {
+                        if (parsed.HasValue)
+                            ld.ForceValue = parsed.Value;
+                        ld.IsForced = (byte)(forced ? 1 : 0);
+                    });
                     return true;
                 }
                 case PointKind.LP:
                 {
-                    ref var lp = ref slot.Arena.GetRef<LP>(slot.Sid);
-                    if (forced && forceValue != null)
-                        lp.ForceValue = ushort.Parse(forceValue, CultureInfo.InvariantCulture);
-                    lp.IsForced = (byte)(forced ? 1 : 0);
+                    ushort? parsed = forced && forceValue != null
+                        ? ushort.Parse(forceValue, CultureInfo.InvariantCulture)
+                        : null;
+                    slot.Arena.UpdateSlot<LP>(slot.Sid, (ref LP lp) =>
+                    {
+                        if (parsed.HasValue)
+                            lp.ForceValue = parsed.Value;
+                        lp.IsForced = (byte)(forced ? 1 : 0);
+                    });
                     return true;
                 }
                 case PointKind.LP32:
                 {
-                    ref var lp32 = ref slot.Arena.GetRef<LP32>(slot.Sid);
-                    if (forced && forceValue != null)
-                        lp32.ForceValue = uint.Parse(forceValue, CultureInfo.InvariantCulture);
-                    lp32.IsForced = (byte)(forced ? 1 : 0);
+                    uint? parsed = forced && forceValue != null
+                        ? uint.Parse(forceValue, CultureInfo.InvariantCulture)
+                        : null;
+                    slot.Arena.UpdateSlot<LP32>(slot.Sid, (ref LP32 lp32) =>
+                    {
+                        if (parsed.HasValue)
+                            lp32.ForceValue = parsed.Value;
+                        lp32.IsForced = (byte)(forced ? 1 : 0);
+                    });
                     return true;
                 }
             }

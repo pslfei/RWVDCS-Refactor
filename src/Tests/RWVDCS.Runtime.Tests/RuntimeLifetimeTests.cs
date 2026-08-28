@@ -56,6 +56,7 @@ public sealed class RuntimeLifetimeTests
             Assert.Same(newRuntime, newLease.Runtime);
             Assert.Equal(20f, newRuntime.Dpus[0].LocalSlots["AI001"].ReadBoxedBuffer());
             Assert.Throws<ObjectDisposedException>(() => oldSlot.ReadBoxedBuffer());
+            Assert.Throws<ObjectDisposedException>(() => oldSlot.WriteBoxedBuffer(11f));
         }
         finally
         {
@@ -158,10 +159,122 @@ public sealed class RuntimeLifetimeTests
 
             Assert.Null(host.TryAcquireRuntimeLease());
             Assert.Throws<ObjectDisposedException>(() => slot.ReadBoxedBuffer());
+            Assert.Throws<ObjectDisposedException>(() => slot.WriteBoxedBuffer(31f));
         }
         finally
         {
             lease?.Dispose();
+            host.Dispose();
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Realtime_value_service_dispose_waits_for_inflight_change_callback()
+    {
+        string dataDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"rwvdcs-realtime-value-dispose-tests-{Guid.NewGuid():N}");
+        var host = new RuntimeHost(new RuntimeHostOptions
+        {
+            BlocksAssembly = typeof(RuntimeLifetimeTests).Assembly,
+            DataDirectory = dataDirectory,
+            EnableHistory = false,
+        });
+        var service = new RealtimeValueService(host, changeScanIntervalMs: 50);
+        using var callbackEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseCallback = new ManualResetEventSlim(initialState: false);
+        Task? disposeTask = null;
+
+        try
+        {
+            SetRuntime(host, BuildRuntime(BuildModel(defaultValue: 40f)));
+            int client = service.Attach(requestedClientHandle: 0, useDataChange: true);
+            RealtimeSubscribeResult subscription = Assert.Single(service.Subscribe(client, ["AI001"]));
+            Assert.True(subscription.Found);
+
+            service.DataChanged += (_, _, _) =>
+            {
+                callbackEntered.Set();
+                releaseCallback.Wait(TimeSpan.FromSeconds(5));
+            };
+
+            Assert.True(callbackEntered.Wait(TimeSpan.FromSeconds(5)), "变化扫描回调没有按期进入");
+
+            disposeTask = Task.Run(service.Dispose);
+            await Task.Delay(100);
+            Assert.False(disposeTask.IsCompleted, "实时值服务不应在在途变化扫描回调结束前完成释放");
+
+            releaseCallback.Set();
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            disposeTask = null;
+        }
+        finally
+        {
+            releaseCallback.Set();
+            if (disposeTask != null)
+                await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            service.Dispose();
+            host.Dispose();
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Realtime_write_holds_runtime_lease_until_point_write_finishes()
+    {
+        string dataDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"rwvdcs-realtime-write-lifetime-tests-{Guid.NewGuid():N}");
+        var host = new RuntimeHost(new RuntimeHostOptions
+        {
+            BlocksAssembly = typeof(RuntimeLifetimeTests).Assembly,
+            DataDirectory = dataDirectory,
+            EnableHistory = false,
+        });
+        var service = new RealtimeValueService(host, changeScanIntervalMs: 1000);
+        using var conversionEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseConversion = new ManualResetEventSlim(initialState: false);
+        Task<bool[]>? writeTask = null;
+        Task? disposeTask = null;
+
+        try
+        {
+            DcsRuntime runtime = BuildRuntime(BuildModel(defaultValue: 10f));
+            SetRuntime(host, runtime);
+            PointSlotRef slot = runtime.Dpus[0].LocalSlots["AI001"];
+            var blockingValue = new BlockingConvertible(55f, conversionEntered, releaseConversion);
+
+            writeTask = Task.Run(() => service.WriteByNames(
+                ["AI001"],
+                [blockingValue],
+                clientInfo: null));
+
+            Assert.True(conversionEntered.Wait(TimeSpan.FromSeconds(5)), "实时写入没有进入类型转换阶段");
+            Assert.Equal(1, GetActiveRuntimeLeaseCount(host));
+
+            disposeTask = Task.Run(host.Dispose);
+            await Task.Delay(100);
+            Assert.False(disposeTask.IsCompleted, "实时点写入完成前不应释放 Runtime/Arena");
+
+            releaseConversion.Set();
+            Assert.True(Assert.Single(await writeTask.WaitAsync(TimeSpan.FromSeconds(5))));
+            writeTask = null;
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            disposeTask = null;
+
+            Assert.Throws<ObjectDisposedException>(() => slot.WriteBoxedBuffer(56f));
+        }
+        finally
+        {
+            releaseConversion.Set();
+            if (writeTask != null)
+                await writeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            if (disposeTask != null)
+                await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            service.Dispose();
             host.Dispose();
             if (Directory.Exists(dataDirectory))
                 Directory.Delete(dataDirectory, recursive: true);
@@ -236,6 +349,51 @@ public sealed class RuntimeLifetimeTests
             lock (gate)
                 return (bool)(retiringField.GetValue(host) ?? false);
         }, TimeSpan.FromSeconds(5));
+    }
+
+    private static int GetActiveRuntimeLeaseCount(RuntimeHost host)
+    {
+        FieldInfo field = typeof(RuntimeHost).GetField(
+            "_activeRuntimeLeases",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到 RuntimeHost._activeRuntimeLeases 字段");
+        return (int)(field.GetValue(host) ?? 0);
+    }
+
+    private sealed class BlockingConvertible(
+        float value,
+        ManualResetEventSlim entered,
+        ManualResetEventSlim release) : IConvertible
+    {
+        public TypeCode GetTypeCode() => TypeCode.Single;
+
+        public float ToSingle(IFormatProvider? provider)
+        {
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException("等待测试释放类型转换超时");
+            return value;
+        }
+
+        public object ToType(Type conversionType, IFormatProvider? provider)
+            => conversionType == typeof(float)
+                ? ToSingle(provider)
+                : throw new InvalidCastException();
+
+        public bool ToBoolean(IFormatProvider? provider) => throw new InvalidCastException();
+        public byte ToByte(IFormatProvider? provider) => throw new InvalidCastException();
+        public char ToChar(IFormatProvider? provider) => throw new InvalidCastException();
+        public DateTime ToDateTime(IFormatProvider? provider) => throw new InvalidCastException();
+        public decimal ToDecimal(IFormatProvider? provider) => throw new InvalidCastException();
+        public double ToDouble(IFormatProvider? provider) => ToSingle(provider);
+        public short ToInt16(IFormatProvider? provider) => throw new InvalidCastException();
+        public int ToInt32(IFormatProvider? provider) => throw new InvalidCastException();
+        public long ToInt64(IFormatProvider? provider) => throw new InvalidCastException();
+        public sbyte ToSByte(IFormatProvider? provider) => throw new InvalidCastException();
+        public string ToString(IFormatProvider? provider) => value.ToString(provider);
+        public ushort ToUInt16(IFormatProvider? provider) => throw new InvalidCastException();
+        public uint ToUInt32(IFormatProvider? provider) => throw new InvalidCastException();
+        public ulong ToUInt64(IFormatProvider? provider) => throw new InvalidCastException();
     }
 
     private static int ReserveTcpPort()

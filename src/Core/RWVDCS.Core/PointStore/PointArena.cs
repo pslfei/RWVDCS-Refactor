@@ -6,6 +6,8 @@ using RWVDCS.LowLevel;
 
 namespace RWVDCS.Core.PointStore;
 
+public delegate void SlotUpdater<T>(ref T value) where T : unmanaged;
+
 /// <summary>
 /// 连续内存点仓（每 DPU 一个），替代老系统 MemoryManage + PointManage 的存储职责。
 /// </summary>
@@ -20,22 +22,30 @@ namespace RWVDCS.Core.PointStore;
 /// </remarks>
 public sealed class PointArena : IDisposable
 {
+    private static long s_nextInstanceId;
+
     private readonly MappedMemory _memory;
     private readonly SlotEntry[] _directory;
     private readonly FrozenDictionary<string, int> _names;
     private readonly string?[] _sidToName;
     private readonly long _dataOffset;
+    private readonly int _dataLength;
     private readonly long _schemaHash;
-    private bool _disposed;
+    // 0=可访问，1=正在释放，2=已释放。访问先登记，Dispose 进入状态 1 后
+    // 拒绝新访问并等待在途访问排空，避免 MMF 指针在读写中途失效。
+    private int _disposeState;
+    private int _activeAccesses;
 
     private PointArena(MappedMemory memory, SlotEntry[] directory,
         FrozenDictionary<string, int> names, string?[] sidToName, long dataOffset, long schemaHash)
     {
+        InstanceId = Interlocked.Increment(ref s_nextInstanceId);
         _memory = memory;
         _directory = directory;
         _names = names;
         _sidToName = sidToName;
         _dataOffset = dataOffset;
+        _dataLength = checked(memory.Length - (int)dataOffset);
         _schemaHash = schemaHash;
     }
 
@@ -109,13 +119,49 @@ public sealed class PointArena : IDisposable
 
     public int SlotCount => _directory.Length;
 
+    /// <summary>进程内单调递增的 Arena 身份，用于跨 DPU 槽键隔离；不复用对象引用哈希。</summary>
+    public long InstanceId { get; }
+
     public long SchemaHash => _schemaHash;
+
+    /// <summary>
+    /// 为必须短期使用 <see cref="GetRef{T}"/>、<see cref="GetSlotSpan"/> 或
+    /// <see cref="DataRegion"/> 的结构性操作持有访问租约；租约释放前 Dispose 不会解除 MMF 映射。
+    /// </summary>
+    public AccessLease AcquireAccessLease()
+    {
+        EnterAccess();
+        return new AccessLease(this);
+    }
+
+    public sealed class AccessLease : IDisposable
+    {
+        private PointArena? _owner;
+
+        internal AccessLease(PointArena owner) => _owner = owner;
+
+        public void Dispose()
+        {
+            PointArena? owner = Interlocked.Exchange(ref _owner, null);
+            owner?.ExitAccess();
+        }
+    }
 
     /// <summary>周期计数（随快照保存/恢复，工况语义）。</summary>
     public long CycleCount
     {
-        get => MemoryMarshal.AsRef<ArenaHeader>(_memory.Span).CycleCount;
-        set => MemoryMarshal.AsRef<ArenaHeader>(_memory.Span).CycleCount = value;
+        get
+        {
+            EnterAccess();
+            try { return MemoryMarshal.AsRef<ArenaHeader>(_memory.Span).CycleCount; }
+            finally { ExitAccess(); }
+        }
+        set
+        {
+            EnterAccess();
+            try { MemoryMarshal.AsRef<ArenaHeader>(_memory.Span).CycleCount = value; }
+            finally { ExitAccess(); }
+        }
     }
 
     /// <summary>点名 → SID（不区分大小写，语义对齐老系统 nameTable）。</summary>
@@ -127,14 +173,20 @@ public sealed class PointArena : IDisposable
 
     public int GetByteLength(int sid) => _directory[sid].ByteLength;
 
-    /// <summary>取槽位原始字节视图（零拷贝，等价老系统 MemorySlot）。</summary>
+    /// <summary>
+    /// 取槽位原始字节视图（零拷贝，等价老系统 MemorySlot）。调用方必须在视图使用期间
+    /// 持有 <see cref="AcquireAccessLease"/>，或保证 Arena 尚未发布且不可能并发释放。
+    /// </summary>
     public Span<byte> GetSlotSpan(int sid)
     {
         var entry = _directory[sid];
         return _memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), entry.ByteLength);
     }
 
-    /// <summary>按类型取槽位引用（就地读写，FB 视图的底层原语）。</summary>
+    /// <summary>
+    /// 按类型取槽位引用（就地读写，FB 视图的底层原语）。调用方必须在 ref 使用期间
+    /// 持有 <see cref="AcquireAccessLease"/>，或保证 Arena 不可能并发释放。
+    /// </summary>
     public ref T GetRef<T>(int sid) where T : unmanaged
     {
         var entry = _directory[sid];
@@ -144,26 +196,81 @@ public sealed class PointArena : IDisposable
         return ref MemoryMarshal.AsRef<T>(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), size));
     }
 
+    /// <summary>在访问屏障内读取整槽结构副本，避免 ref 逃逸到 Arena 释放边界之外。</summary>
+    public T ReadSlot<T>(int sid) where T : unmanaged
+    {
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            int size = Unsafe.SizeOf<T>();
+            if (size > entry.ByteLength)
+                throw new ArgumentException($"SID {sid} 槽位长度 {entry.ByteLength} 小于类型 {typeof(T).Name} 的 {size} 字节。");
+            return MemoryMarshal.Read<T>(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), size));
+        }
+        finally
+        {
+            ExitAccess();
+        }
+    }
+
+    /// <summary>在访问屏障内原地更新整槽结构，不向调用方暴露 MMF ref。</summary>
+    public void UpdateSlot<T>(int sid, SlotUpdater<T> updater) where T : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(updater);
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            int size = Unsafe.SizeOf<T>();
+            if (size > entry.ByteLength)
+                throw new ArgumentException($"SID {sid} 槽位长度 {entry.ByteLength} 小于类型 {typeof(T).Name} 的 {size} 字节。");
+            ref T target = ref MemoryMarshal.AsRef<T>(
+                _memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), size));
+            updater(ref target);
+        }
+        finally
+        {
+            ExitAccess();
+        }
+    }
+
     /// <summary>按 (SID, 字段偏移) 读单值——FSID 读路径的核心原语。</summary>
     public T ReadField<T>(int sid, uint offset) where T : unmanaged
     {
-        var entry = _directory[sid];
-        int size = Unsafe.SizeOf<T>();
-        if (offset + (uint)size > (uint)entry.ByteLength)
-            throw new ArgumentOutOfRangeException(nameof(offset),
-                $"SID {sid} 读越界：offset={offset} size={size} slot={entry.ByteLength}。");
-        return MemoryMarshal.Read<T>(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset + offset), size));
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            int size = Unsafe.SizeOf<T>();
+            if (offset + (uint)size > (uint)entry.ByteLength)
+                throw new ArgumentOutOfRangeException(nameof(offset),
+                    $"SID {sid} 读越界：offset={offset} size={size} slot={entry.ByteLength}。");
+            return MemoryMarshal.Read<T>(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset + offset), size));
+        }
+        finally
+        {
+            ExitAccess();
+        }
     }
 
     /// <summary>按 (SID, 字段偏移) 写单值——FSID 写路径的核心原语。</summary>
     public void WriteField<T>(int sid, uint offset, in T value) where T : unmanaged
     {
-        var entry = _directory[sid];
-        int size = Unsafe.SizeOf<T>();
-        if (offset + (uint)size > (uint)entry.ByteLength)
-            throw new ArgumentOutOfRangeException(nameof(offset),
-                $"SID {sid} 写越界：offset={offset} size={size} slot={entry.ByteLength}。");
-        MemoryMarshal.Write(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset + offset), size), in value);
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            int size = Unsafe.SizeOf<T>();
+            if (offset + (uint)size > (uint)entry.ByteLength)
+                throw new ArgumentOutOfRangeException(nameof(offset),
+                    $"SID {sid} 写越界：offset={offset} size={size} slot={entry.ByteLength}。");
+            MemoryMarshal.Write(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset + offset), size), in value);
+        }
+        finally
+        {
+            ExitAccess();
+        }
     }
 
     public T ReadField<T>(long fsid) where T : unmanaged
@@ -173,9 +280,9 @@ public sealed class PointArena : IDisposable
         => WriteField(Fsid.GetSid(fsid), Fsid.GetOffset(fsid), in value);
 
     /// <summary>数据区总长（字节）。</summary>
-    public int DataRegionLength => (int)(_memory.Span.Length - _dataOffset);
+    public int DataRegionLength => _dataLength;
 
-    /// <summary>数据区只读视图（基线捕获/增量快照用）。</summary>
+    /// <summary>数据区只读视图；调用方必须在使用期间持有 <see cref="AcquireAccessLease"/>。</summary>
     public ReadOnlySpan<byte> DataRegion => _memory.Span.Slice((int)_dataOffset, DataRegionLength);
 
     /// <summary>整体覆写数据区（恢复基线用；长度必须一致）。</summary>
@@ -183,7 +290,65 @@ public sealed class PointArena : IDisposable
     {
         if (data.Length != DataRegionLength)
             throw new ArgumentException($"数据区长度不符：{data.Length} ≠ {DataRegionLength}");
-        data.CopyTo(_memory.Span.Slice((int)_dataOffset));
+        EnterAccess();
+        try { data.CopyTo(_memory.Span.Slice((int)_dataOffset, _dataLength)); }
+        finally { ExitAccess(); }
+    }
+
+    /// <summary>在访问屏障内把槽位的指定长度复制到托管缓冲区。</summary>
+    public void CopySlotTo(int sid, Span<byte> destination, int length)
+    {
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            if (length < 0 || length > entry.ByteLength || length > destination.Length)
+                throw new ArgumentOutOfRangeException(nameof(length),
+                    $"SID {sid} 复制长度非法：length={length}, slot={entry.ByteLength}, destination={destination.Length}。");
+            _memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), length).CopyTo(destination);
+        }
+        finally
+        {
+            ExitAccess();
+        }
+    }
+
+    /// <summary>在访问屏障内把托管缓冲区写入槽位的指定长度。</summary>
+    public void CopySlotFrom(int sid, ReadOnlySpan<byte> source, int length)
+    {
+        EnterAccess();
+        try
+        {
+            var entry = _directory[sid];
+            if (length < 0 || length > entry.ByteLength || length > source.Length)
+                throw new ArgumentOutOfRangeException(nameof(length),
+                    $"SID {sid} 复制长度非法：length={length}, slot={entry.ByteLength}, source={source.Length}。");
+            source[..length].CopyTo(_memory.Span.Slice((int)(_dataOffset + entry.ByteOffset), length));
+        }
+        finally
+        {
+            ExitAccess();
+        }
+    }
+
+    /// <summary>同时租住源、目标 Arena 后做零中间分配的跨 Arena 槽拷贝。</summary>
+    public static void CopySlotBetween(PointArena source, int sourceSid,
+        PointArena destination, int destinationSid, int length)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        using var sourceAccess = source.AcquireAccessLease();
+        using var destinationAccess = destination.AcquireAccessLease();
+
+        var sourceEntry = source._directory[sourceSid];
+        var destinationEntry = destination._directory[destinationSid];
+        if (length < 0 || length > sourceEntry.ByteLength || length > destinationEntry.ByteLength)
+            throw new ArgumentOutOfRangeException(nameof(length));
+
+        source._memory.Span
+            .Slice((int)(source._dataOffset + sourceEntry.ByteOffset), length)
+            .CopyTo(destination._memory.Span
+                .Slice((int)(destination._dataOffset + destinationEntry.ByteOffset), length));
     }
 
     /// <summary>槽位在数据区内的（偏移, 长度）。</summary>
@@ -196,16 +361,30 @@ public sealed class PointArena : IDisposable
     /// <summary>槽间拷贝（等价老系统 MemoryManage.Copy 的核心路径，可选按位取反）。</summary>
     public void CopySlot(int srcSid, uint srcOffset, int dstSid, uint dstOffset, int length, bool negate = false)
     {
-        var src = GetSlotSpan(srcSid).Slice((int)srcOffset, length);
-        var dst = GetSlotSpan(dstSid).Slice((int)dstOffset, length);
-        if (!negate)
+        EnterAccess();
+        try
         {
-            src.CopyTo(dst);
+            var srcEntry = _directory[srcSid];
+            var dstEntry = _directory[dstSid];
+            if (length < 0 || srcOffset + (uint)length > (uint)srcEntry.ByteLength
+                || dstOffset + (uint)length > (uint)dstEntry.ByteLength)
+                throw new ArgumentOutOfRangeException(nameof(length));
+
+            var src = _memory.Span.Slice((int)(_dataOffset + srcEntry.ByteOffset + srcOffset), length);
+            var dst = _memory.Span.Slice((int)(_dataOffset + dstEntry.ByteOffset + dstOffset), length);
+            if (!negate)
+            {
+                src.CopyTo(dst);
+            }
+            else
+            {
+                for (int i = 0; i < length; i++)
+                    dst[i] = (byte)~src[i];
+            }
         }
-        else
+        finally
         {
-            for (int i = 0; i < length; i++)
-                dst[i] = (byte)~src[i];
+            ExitAccess();
         }
     }
 
@@ -219,6 +398,7 @@ public sealed class PointArena : IDisposable
     /// </summary>
     public void SaveSnapshot(string path)
     {
+        using var access = AcquireAccessLease();
         var span = _memory.Span;
         ref var header = ref MemoryMarshal.AsRef<ArenaHeader>(span);
         header.SavedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -239,6 +419,7 @@ public sealed class PointArena : IDisposable
     /// </summary>
     public void LoadSnapshotInPlace(string path)
     {
+        using var access = AcquireAccessLease();
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
         Span<byte> headerBytes = stackalloc byte[ArenaLayout.HeaderSize];
         fs.ReadExactly(headerBytes);
@@ -257,7 +438,11 @@ public sealed class PointArena : IDisposable
     }
 
     /// <summary>持久化模式下把脏页刷进后备文件。</summary>
-    public void Flush() => _memory.Flush();
+    public void Flush()
+    {
+        using var access = AcquireAccessLease();
+        _memory.Flush();
+    }
 
     #endregion
 
@@ -320,12 +505,47 @@ public sealed class PointArena : IDisposable
         return unchecked((long)hash);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnterAccess()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+
+        Interlocked.Increment(ref _activeAccesses);
+        if (Volatile.Read(ref _disposeState) == 0)
+            return;
+
+        Interlocked.Decrement(ref _activeAccesses);
+        throw new ObjectDisposedException(nameof(PointArena));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ExitAccess()
+        => Interlocked.Decrement(ref _activeAccesses);
+
     #endregion
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        _memory.Dispose();
+        int previousState = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+        if (previousState != 0)
+        {
+            var concurrentDisposeWait = new SpinWait();
+            while (Volatile.Read(ref _disposeState) == 1)
+                concurrentDisposeWait.SpinOnce();
+            return;
+        }
+
+        var spinner = new SpinWait();
+        while (Volatile.Read(ref _activeAccesses) != 0)
+            spinner.SpinOnce();
+
+        try
+        {
+            _memory.Dispose();
+        }
+        finally
+        {
+            Volatile.Write(ref _disposeState, 2);
+        }
     }
 }

@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
-using RWVDCS.Core.PointStore;
 
 namespace RWVDCS.Runtime;
 
@@ -61,27 +59,29 @@ public sealed class IomapOwnership
 
     public int OwnedCount => _owned.Count;
 
+    public int OwnedValueCount => _ownedValues.Count;
+
     private readonly struct PointSlotKey : IEquatable<PointSlotKey>
     {
-        private readonly PointArena _arena;
+        private readonly long _arenaInstanceId;
         private readonly int _sid;
 
-        private PointSlotKey(PointArena arena, int sid)
+        private PointSlotKey(long arenaInstanceId, int sid)
         {
-            _arena = arena;
+            _arenaInstanceId = arenaInstanceId;
             _sid = sid;
         }
 
         public static PointSlotKey From(PointSlotRef slot)
-            => new(slot.Arena, slot.Sid);
+            => new(slot.ArenaInstanceId, slot.Sid);
 
         public bool Equals(PointSlotKey other)
-            => ReferenceEquals(_arena, other._arena) && _sid == other._sid;
+            => _arenaInstanceId == other._arenaInstanceId && _sid == other._sid;
 
         public override bool Equals(object? obj)
             => obj is PointSlotKey other && Equals(other);
 
         public override int GetHashCode()
-            => HashCode.Combine(RuntimeHelpers.GetHashCode(_arena), _sid);
+            => HashCode.Combine(_arenaInstanceId, _sid);
     }
 }

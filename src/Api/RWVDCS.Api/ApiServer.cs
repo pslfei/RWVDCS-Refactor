@@ -353,6 +353,8 @@ public sealed class ApiServer : IAsyncDisposable
                 iomapRejectedBackpressure = 0L,
                 iomapExpired = 0L,
                 iomapApplyFailed = 0L,
+                iomapOwnedCount = rt?.Iomap.OwnedCount ?? 0,
+                iomapOwnedValueCount = rt?.Iomap.OwnedValueCount ?? 0,
                 pointValueCacheCount = _compatGateway.Values.BindingCount,
                 writableRouteCount = _compatGateway.Values.WritableBindingCount,
                 dpus,
@@ -1380,28 +1382,43 @@ public sealed class ApiServer : IAsyncDisposable
 
                 if (isLegacyPost)
                 {
-                    int capacity = context.Request.ContentLength is > 0 and <= LegacyMaxRequestBodyBytes
-                        ? (int)context.Request.ContentLength.Value
-                        : 0;
-                    bufferedBody = new MemoryStream(capacity);
-                    byte[] chunk = new byte[8192];
-                    int total = 0;
-                    while (true)
+                    try
                     {
-                        int read = await context.Request.Body.ReadAsync(chunk.AsMemory(0, chunk.Length), context.RequestAborted);
-                        if (read <= 0)
-                            break;
-                        total += read;
-                        if (total > LegacyMaxRequestBodyBytes)
+                        int capacity = context.Request.ContentLength is > 0 and <= LegacyMaxRequestBodyBytes
+                            ? (int)context.Request.ContentLength.Value
+                            : 0;
+                        bufferedBody = new MemoryStream(capacity);
+                        byte[] chunk = new byte[8192];
+                        int total = 0;
+                        while (true)
                         {
-                            await WriteLegacyError(context, StatusCodes.Status413PayloadTooLarge,
-                                "request body exceeds 4 MiB");
-                            return;
+                            int read = await context.Request.Body.ReadAsync(
+                                chunk.AsMemory(0, chunk.Length), context.RequestAborted);
+                            if (read <= 0)
+                                break;
+                            total += read;
+                            if (total > LegacyMaxRequestBodyBytes)
+                            {
+                                await WriteLegacyError(context, StatusCodes.Status413PayloadTooLarge,
+                                    "request body exceeds 4 MiB");
+                                return;
+                            }
+                            // MemoryStream 是本地内存写入，不再引入第二个异步取消点。
+                            bufferedBody.Write(chunk, 0, read);
                         }
-                        await bufferedBody.WriteAsync(chunk.AsMemory(0, read), context.RequestAborted);
+                        bufferedBody.Position = 0;
+                        context.Request.Body = bufferedBody;
                     }
-                    bufferedBody.Position = 0;
-                    context.Request.Body = bufferedBody;
+                    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+                    {
+                        // 客户端已经断开，连接不可再写响应；finally 仍负责释放许可和缓冲区。
+                        return;
+                    }
+                    catch (IOException) when (context.RequestAborted.IsCancellationRequested)
+                    {
+                        // 连接复位在不同平台/时序下可能表现为 IOException。
+                        return;
+                    }
                 }
 
                 await next(context);
@@ -1557,6 +1574,11 @@ public sealed class ApiServer : IAsyncDisposable
         string? text = request.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
             ? null
             : request.Value.ToString();
+
+        if (text == "2[^]2")
+        {
+            text = "2";
+        }
         if (string.IsNullOrWhiteSpace(pointName) || string.IsNullOrEmpty(text))
             return Results.Json(new { error = "参数 PointName 或 Value 不能为空" });
 

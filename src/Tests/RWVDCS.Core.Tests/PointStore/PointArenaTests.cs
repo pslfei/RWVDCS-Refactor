@@ -202,4 +202,74 @@ public class PointArenaTests : IDisposable
         for (int i = 0; i < 100_000; i += 997)
             Assert.Equal(i * 0.5f, (float)restored.GetRef<LA>(i));
     }
+
+    [Fact]
+    public async Task Concurrent_field_access_and_dispose_never_uses_released_mapping()
+    {
+        const int iterations = 25;
+        const int workersPerIteration = 4;
+
+        for (int iteration = 0; iteration < iterations; iteration++)
+        {
+            var arena = PointArena.Create(SampleBuilder());
+            using var start = new ManualResetEventSlim(initialState: false);
+            int readyWorkers = 0;
+            int completedWrites = 0;
+
+            Task[] workers = Enumerable.Range(0, workersPerIteration)
+                .Select(worker => Task.Run(() =>
+                {
+                    Interlocked.Increment(ref readyWorkers);
+                    start.Wait();
+                    try
+                    {
+                        while (true)
+                        {
+                            arena.WriteField(0, 24, iteration + worker + 0.5f);
+                            _ = arena.ReadField<float>(0, 24);
+                            Interlocked.Increment(ref completedWrites);
+                        }
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Dispose 开始后，旧字段访问只能以此方式结束，不能触碰已释放映射。
+                    }
+                }))
+                .ToArray();
+
+            Assert.True(SpinWait.SpinUntil(
+                () => Volatile.Read(ref readyWorkers) == workersPerIteration,
+                TimeSpan.FromSeconds(5)));
+            start.Set();
+            Assert.True(SpinWait.SpinUntil(
+                () => Volatile.Read(ref completedWrites) >= 100,
+                TimeSpan.FromSeconds(5)));
+
+            arena.Dispose();
+            await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Throws<ObjectDisposedException>(() => arena.WriteField(0, 24, 1f));
+            Assert.Throws<ObjectDisposedException>(() => arena.ReadField<float>(0, 24));
+        }
+    }
+
+    [Fact]
+    public async Task Access_lease_keeps_zero_copy_views_alive_until_released()
+    {
+        var arena = PointArena.Create(SampleBuilder());
+        PointArena.AccessLease access = arena.AcquireAccessLease();
+
+        Task disposeTask = Task.Run(arena.Dispose);
+        await Task.Delay(50);
+        Assert.False(disposeTask.IsCompleted);
+
+        arena.GetRef<LA>(0).Value = 66f;
+        Assert.Equal(66f, (float)arena.GetRef<LA>(0));
+        Assert.Equal(LA.Size, arena.GetSlotSpan(0).Length);
+
+        access.Dispose();
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Throws<ObjectDisposedException>(() => arena.AcquireAccessLease());
+    }
 }

@@ -1,4 +1,5 @@
 using RWVDCS.Core.Blocks;
+using RWVDCS.Core.PointStore;
 
 namespace RWVDCS.Runtime;
 
@@ -83,11 +84,12 @@ public static class OnlineDownloader
                     continue; // 类型变了：保留新工程初值
                 }
 
-                var src = oldSlot.Arena.GetSlotSpan(oldSlot.Sid);
-                var dst = newSlot.Arena.GetSlotSpan(newSlot.Sid);
-                if (src.Length == dst.Length)
+                int sourceLength = oldSlot.Arena.GetByteLength(oldSlot.Sid);
+                int destinationLength = newSlot.Arena.GetByteLength(newSlot.Sid);
+                if (sourceLength == destinationLength)
                 {
-                    src.CopyTo(dst);
+                    PointArena.CopySlotBetween(oldSlot.Arena, oldSlot.Sid,
+                        newSlot.Arena, newSlot.Sid, sourceLength);
                     result.PointsPreserved++;
                 }
             }

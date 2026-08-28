@@ -14,6 +14,69 @@ namespace RWVDCS.Runtime.Tests;
 public sealed class ApiValueContractTests
 {
     [Fact]
+    public async Task SetValue_replaces_non_numeric_composite_string_with_first_numeric_value()
+    {
+        string dataDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"rwvdcs-api-set-value-tests-{Guid.NewGuid():N}");
+        try
+        {
+            using var host = new RuntimeHost(new RuntimeHostOptions
+            {
+                BlocksAssembly = typeof(ApiValueContractTests).Assembly,
+                DataDirectory = dataDirectory,
+            });
+            EngineeringModel model = BuildEngineeringModel();
+            DcsRuntime runtime = BuildRuntime(model);
+            SetRuntime(host, runtime, model);
+
+            int port = ReserveTcpPort();
+            await using var server = new ApiServer(host, port);
+            await server.StartAsync();
+
+            using var handler = new HttpClientHandler { UseProxy = false };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri(server.Url) };
+
+            using HttpResponseMessage compositeResponse = await client.PostAsJsonAsync(
+                "/api/point/setvalue",
+                new { pointName = "DI001.Value", value = "2[^]2" });
+
+            Assert.Equal(HttpStatusCode.OK, compositeResponse.StatusCode);
+            using (JsonDocument compositeJson = JsonDocument.Parse(
+                       await compositeResponse.Content.ReadAsStreamAsync()))
+            {
+                Assert.True(compositeJson.RootElement.GetProperty("success").GetBoolean());
+                Assert.Equal("2", compositeJson.RootElement.GetProperty("value").GetString());
+            }
+            Assert.Equal(true, runtime.Dpus[0].LocalSlots["DI001"].ReadBoxedBuffer());
+
+            using HttpResponseMessage numericResponse = await client.PostAsJsonAsync(
+                "/api/point/setvalue",
+                new { pointName = "DI001.Value", value = "0" });
+
+            Assert.Equal(HttpStatusCode.OK, numericResponse.StatusCode);
+            Assert.Equal(false, runtime.Dpus[0].LocalSlots["DI001"].ReadBoxedBuffer());
+
+            using HttpResponseMessage invalidResponse = await client.PostAsJsonAsync(
+                "/api/point/setvalue",
+                new { pointName = "DI001.Value", value = "invalid[^]2" });
+
+            Assert.Equal(HttpStatusCode.OK, invalidResponse.StatusCode);
+            using JsonDocument invalidJson = JsonDocument.Parse(
+                await invalidResponse.Content.ReadAsStreamAsync());
+            Assert.False(invalidJson.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal(
+                "参数 Value 无法转换为数值类型",
+                invalidJson.RootElement.GetProperty("error").GetString());
+        }
+        finally
+        {
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Value_points_and_blocks_endpoints_return_engineering_metadata_and_compatibility_status_fields()
     {
         string dataDirectory = Path.Combine(
@@ -71,8 +134,8 @@ public sealed class ApiValueContractTests
             JsonElement compatValues = compatJson.RootElement;
             Assert.Equal("6", compatValues.GetProperty("AI001.CurOverState").GetString());
             Assert.Equal("6", compatValues.GetProperty("AI001.cUrOvErStAtE").GetString());
-            Assert.Equal("1", compatValues.GetProperty("AI001.dataQuality").GetString());
-            Assert.Equal("1", compatValues.GetProperty("AI001.DATAQUALITY").GetString());
+            Assert.Equal("0", compatValues.GetProperty("AI001.dataQuality").GetString());
+            Assert.Equal("0", compatValues.GetProperty("AI001.DATAQUALITY").GetString());
 
             using HttpResponseMessage pointsResponse = await client.GetAsync(
                 "/api/points?dpu=DPU1&page=1&pageSize=50");

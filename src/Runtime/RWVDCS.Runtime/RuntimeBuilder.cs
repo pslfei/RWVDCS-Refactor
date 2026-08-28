@@ -237,6 +237,7 @@ public static class RuntimeBuilder
             using (var br = new System.IO.Compression.BrotliStream(
                        ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
             {
+                using var arenaAccess = arena.AcquireAccessLease();
                 br.Write(arena.DataRegion);
             }
             dpu.InitialDataCompressed = ms.ToArray();

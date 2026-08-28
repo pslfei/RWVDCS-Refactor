@@ -71,11 +71,12 @@ public static class PointLayout
 public readonly struct PointSlotRef(PointArena arena, int sid, PointKind kind)
 {
     public PointArena Arena { get; } = arena;
+    public long ArenaInstanceId { get; } = arena?.InstanceId ?? 0;
     public int Sid { get; } = sid;
     public PointKind Kind { get; } = kind;
 
     /// <summary>是否为可读写 buffer 的真点（块槽只是名字占位，读写均为哑操作）。</summary>
-    public bool IsRealPoint => Kind != PointKind.Block;
+    public bool IsRealPoint => Arena != null && Kind != PointKind.Block;
 
     /// <summary>
     /// 读点 buffer 子字段（装箱），对齐老系统 TryGetVariableFast 的装箱类型：
@@ -118,9 +119,17 @@ public readonly struct PointSlotRef(PointArena arena, int sid, PointKind kind)
                     break;
             }
         }
-        catch
+        catch (InvalidCastException)
         {
-            // 类型转换失败（溢出/无效转换）：老系统同样放弃本次写入
+            // 对齐老系统：无法转换为目标点类型时放弃本次写入。
+        }
+        catch (FormatException)
+        {
+            // 对齐老系统：字符串等输入格式无效时放弃本次写入。
+        }
+        catch (OverflowException)
+        {
+            // 对齐老系统：数值超出目标点类型范围时放弃本次写入。
         }
     }
 }

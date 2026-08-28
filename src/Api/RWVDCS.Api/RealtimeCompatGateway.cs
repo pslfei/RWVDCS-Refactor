@@ -440,18 +440,27 @@ public sealed class RealtimeCompatGateway : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _values.DataChanged -= QueueDataChanged;
-        _values.RuntimeChanging -= QueueRuntimeChanging;
-        _values.RuntimeRebound -= QueueRuntimeRebound;
-        _values.Dispose();
+        // 请求/事件管道仍可能调用 _values，必须先取消并等待两个循环完全退出，
+        // 再释放实时值服务及其缓存的 PointSlotRef。
         _stop.Cancel();
         SignalEvents();
         var tasks = new[] { _requestTask, _eventTask }.Where(t => t != null).Cast<Task>().ToArray();
         if (tasks.Length > 0)
         {
-            try { await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
-            catch { }
+            try
+            {
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                // 正常关闭路径。
+            }
         }
+
+        _values.DataChanged -= QueueDataChanged;
+        _values.RuntimeChanging -= QueueRuntimeChanging;
+        _values.RuntimeRebound -= QueueRuntimeRebound;
+        _values.Dispose();
         _eventSignal.Dispose();
         _stop.Dispose();
     }

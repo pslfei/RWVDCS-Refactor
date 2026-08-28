@@ -121,7 +121,7 @@ public sealed class DcsRuntime : IDisposable
                         buffer = ArrayPool<byte>.Shared.Rent(len);
                     }
                     codec.Flush(cmd.Fc, buffer, 0);
-                    buffer.AsSpan(0, len).CopyTo(dpu.Arena.GetSlotSpan(cmd.StateSid));
+                    dpu.Arena.CopySlotFrom(cmd.StateSid, buffer.AsSpan(0, len), len);
                 }
             }
         }
@@ -150,7 +150,7 @@ public sealed class DcsRuntime : IDisposable
                         ArrayPool<byte>.Shared.Return(buffer);
                         buffer = ArrayPool<byte>.Shared.Rent(len);
                     }
-                    dpu.Arena.GetSlotSpan(cmd.StateSid).CopyTo(buffer);
+                    dpu.Arena.CopySlotTo(cmd.StateSid, buffer.AsSpan(0, len), len);
                     codec.Load(cmd.Fc, buffer, 0);
                 }
             }

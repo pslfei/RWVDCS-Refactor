@@ -31,10 +31,27 @@ public sealed class BlockStateCodec
         => Cache.GetValue(blockType, static t => new BlockStateCodec(BlockStateSchema.For(t)));
 
     /// <summary>把块实例状态写入缓冲区（buffer 长度必须 ≥ offset + Schema.ByteLength）。</summary>
-    public void Flush(Function block, byte[] buffer, int offset) => _flush(block, buffer, offset);
+    public void Flush(Function block, byte[] buffer, int offset)
+    {
+        ValidateBuffer(buffer, offset);
+        _flush(block, buffer, offset);
+    }
 
     /// <summary>从缓冲区恢复块实例状态。</summary>
-    public void Load(Function block, byte[] buffer, int offset) => _load(block, buffer, offset);
+    public void Load(Function block, byte[] buffer, int offset)
+    {
+        ValidateBuffer(buffer, offset);
+        _load(block, buffer, offset);
+    }
+
+    private void ValidateBuffer(byte[] buffer, int offset)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (offset < 0 || offset > buffer.Length - Schema.ByteLength)
+            throw new ArgumentOutOfRangeException(nameof(offset),
+                $"块 {Schema.BlockType.Name} 状态缓冲区不足：offset={offset}, "
+                + $"schema={Schema.ByteLength}, buffer={buffer.Length}。");
+    }
 
     private static Action<Function, byte[], int> BuildFlush(BlockStateSchema schema)
     {
@@ -114,29 +131,38 @@ public sealed class BlockStateCodec
 public static class StateIo
 {
     public static void Write<T>(byte[] buf, int off, T value) where T : unmanaged
-        => Unsafe.WriteUnaligned(ref buf[off], value);
+    {
+        ValidateRange(buf, off, Unsafe.SizeOf<T>());
+        Unsafe.WriteUnaligned(ref buf[off], value);
+    }
 
     public static T Read<T>(byte[] buf, int off) where T : unmanaged
-        => Unsafe.ReadUnaligned<T>(ref buf[off]);
+    {
+        ValidateRange(buf, off, Unsafe.SizeOf<T>());
+        return Unsafe.ReadUnaligned<T>(ref buf[off]);
+    }
 
     public static void WriteArray<T>(byte[] buf, int off, T[]? array, int capacity) where T : unmanaged
     {
         int size = Unsafe.SizeOf<T>();
+        int total = GetArrayByteLength(capacity, size);
+        ValidateRange(buf, off, total);
         int n = Math.Min(array?.Length ?? 0, capacity);
         for (int i = 0; i < n; i++)
             Unsafe.WriteUnaligned(ref buf[off + i * size], array![i]);
         // 余量清零，保证快照字节确定性
         int used = n * size;
-        int total = capacity * size;
         if (used < total)
             Array.Clear(buf, off + used, total - used);
     }
 
     public static void ReadArray<T>(byte[] buf, int off, T[]? array, int capacity) where T : unmanaged
     {
+        int size = Unsafe.SizeOf<T>();
+        int total = GetArrayByteLength(capacity, size);
+        ValidateRange(buf, off, total);
         if (array == null)
             return;
-        int size = Unsafe.SizeOf<T>();
         int n = Math.Min(array.Length, capacity);
         for (int i = 0; i < n; i++)
             array[i] = Unsafe.ReadUnaligned<T>(ref buf[off + i * size]);
@@ -144,7 +170,9 @@ public static class StateIo
 
     public static void WriteString(byte[] buf, int off, string? value, int capacity)
     {
-        Array.Clear(buf, off, 4 + capacity);
+        int total = GetStringByteLength(capacity);
+        ValidateRange(buf, off, total);
+        Array.Clear(buf, off, total);
         if (string.IsNullOrEmpty(value))
         {
             // 长度 -1 表示 null，与空串区分
@@ -160,6 +188,7 @@ public static class StateIo
 
     public static string? ReadString(byte[] buf, int off, int capacity)
     {
+        ValidateRange(buf, off, GetStringByteLength(capacity));
         int len = Unsafe.ReadUnaligned<int>(ref buf[off]);
         if (len < 0)
             return null;
@@ -167,5 +196,26 @@ public static class StateIo
             return "";
         len = Math.Min(len, capacity);
         return Encoding.UTF8.GetString(buf, off + 4, len);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ValidateRange(byte[] buf, int off, int length)
+    {
+        ArgumentNullException.ThrowIfNull(buf);
+        if (off < 0 || length < 0 || off > buf.Length - length)
+            throw new ArgumentOutOfRangeException(nameof(off),
+                $"状态缓冲区越界：offset={off}, length={length}, buffer={buf.Length}。");
+    }
+
+    private static int GetArrayByteLength(int capacity, int elementSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return checked(capacity * elementSize);
+    }
+
+    private static int GetStringByteLength(int capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return checked(4 + capacity);
     }
 }

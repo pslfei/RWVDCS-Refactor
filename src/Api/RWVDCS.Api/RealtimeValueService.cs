@@ -230,11 +230,14 @@ public sealed class RealtimeValueService : IDisposable
         if (names == null || names.Length == 0)
             return [];
 
-        DcsRuntime? runtime = _host.Runtime;
         var results = new RealtimeSubscribeResult[names.Length];
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return results;
+        DcsRuntime runtime = runtimeLease.Runtime;
         lock (_gate)
         {
-            if (_changing || runtime == null || !_sessions.TryGetValue(clientHandle, out var session))
+            if (_changing || !_sessions.TryGetValue(clientHandle, out var session))
                 return results;
 
             for (int i = 0; i < names.Length; i++)
@@ -282,8 +285,11 @@ public sealed class RealtimeValueService : IDisposable
         if (names == null || names.Length == 0)
             return [];
 
-        LegacyHandleBinding?[] bindings = GetOrBindByNames(names);
         var results = new RealtimeSubscribeResult[names.Length];
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return results;
+        LegacyHandleBinding?[] bindings = GetOrBindByNames(names, runtimeLease.Runtime);
         lock (_gate)
         {
             for (int i = 0; i < bindings.Length; i++)
@@ -340,6 +346,9 @@ public sealed class RealtimeValueService : IDisposable
         if (handles == null || handles.Length == 0)
             return [];
         var result = new CompatValue[handles.Length];
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return result;
         lock (_gate)
         {
             if (_changing)
@@ -367,8 +376,11 @@ public sealed class RealtimeValueService : IDisposable
     {
         if (names == null || names.Length == 0)
             return [];
-        var bindings = GetOrBindByNames(names);
         var result = new object?[names.Length];
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return result;
+        var bindings = GetOrBindByNames(names, runtimeLease.Runtime);
         lock (_gate)
         {
             if (_changing)
@@ -390,7 +402,11 @@ public sealed class RealtimeValueService : IDisposable
         var result = new bool[names.Length];
         if (values == null || values.Length == 0)
             return result;
-        var bindings = GetOrBindByNames(names);
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return result;
+        DcsRuntime runtime = runtimeLease.Runtime;
+        var bindings = GetOrBindByNames(names, runtime);
         bool iomapClient = IsIomapClient(clientInfo);
         int count = Math.Min(names.Length, values.Length);
         lock (_gate)
@@ -410,7 +426,7 @@ public sealed class RealtimeValueService : IDisposable
                     result[i] = binding.Accessor.Write(values[i]);
                     if (result[i] && owned && binding.Accessor is PointBufferValueAccessor point)
                     {
-                        _host.Runtime?.Iomap.SetOwnedValue(point.Slot, values[i]);
+                        runtime.Iomap.SetOwnedValue(point.Slot, values[i]);
                         binding.LastIomapValue = values[i];
                     }
                 }
@@ -424,12 +440,15 @@ public sealed class RealtimeValueService : IDisposable
     {
         if (names == null || names.Length == 0)
             return [];
-        var bindings = GetOrBindByNames(names);
         var result = new bool[names.Length];
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return result;
+        DcsRuntime runtime = runtimeLease.Runtime;
+        var bindings = GetOrBindByNames(names, runtime);
         lock (_gate)
         {
-            DcsRuntime? runtime = _host.Runtime;
-            if (_changing || runtime == null)
+            if (_changing)
                 return result;
             for (int i = 0; i < bindings.Length; i++)
             {
@@ -463,6 +482,10 @@ public sealed class RealtimeValueService : IDisposable
         if (values == null || values.Length == 0)
             return results;
 
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return results;
+        DcsRuntime runtime = runtimeLease.Runtime;
         bool iomapClient = IsIomapClient(clientInfo);
         int count = Math.Min(handles.Length, values.Length);
         lock (_gate)
@@ -484,7 +507,7 @@ public sealed class RealtimeValueService : IDisposable
                         if (results[i] && binding.Accessor is PointBufferValueAccessor point
                             && (binding.IomapOwned || iomapClient))
                         {
-                            _host.Runtime?.Iomap.SetOwnedValue(point.Slot, value);
+                            runtime.Iomap.SetOwnedValue(point.Slot, value);
                             binding.LastIomapValue = value;
                         }
                     }
@@ -510,6 +533,10 @@ public sealed class RealtimeValueService : IDisposable
         if (values == null || values.Length == 0)
             return results;
 
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        if (runtimeLease == null)
+            return results;
+        DcsRuntime runtime = runtimeLease.Runtime;
         bool iomapClient = IsIomapClient(clientInfo);
         int count = Math.Min(handles.Length, values.Length);
         lock (_gate)
@@ -531,7 +558,7 @@ public sealed class RealtimeValueService : IDisposable
                     if (results[i] && binding.Accessor is PointBufferValueAccessor point
                         && (binding.IomapOwned || iomapClient))
                     {
-                        _host.Runtime?.Iomap.SetOwnedValue(point.Slot, values[i]);
+                        runtime.Iomap.SetOwnedValue(point.Slot, values[i]);
                         binding.LastIomapValue = values[i];
                     }
                 }
@@ -637,13 +664,12 @@ public sealed class RealtimeValueService : IDisposable
         }
     }
 
-    private LegacyHandleBinding?[] GetOrBindByNames(string[] names)
+    private LegacyHandleBinding?[] GetOrBindByNames(string[] names, DcsRuntime runtime)
     {
         var result = new LegacyHandleBinding?[names.Length];
-        DcsRuntime? runtime = _host.Runtime;
         lock (_gate)
         {
-            if (_changing || runtime == null)
+            if (_changing)
                 return result;
             for (int i = 0; i < names.Length; i++)
             {
@@ -678,7 +704,8 @@ public sealed class RealtimeValueService : IDisposable
     private void OnRuntimeSwapped()
     {
         var invalid = new List<long>();
-        DcsRuntime? runtime = _host.Runtime;
+        using RuntimeReadLease? runtimeLease = _host.TryAcquireRuntimeLease();
+        DcsRuntime? runtime = runtimeLease?.Runtime;
         ulong generation;
         lock (_gate)
         {
@@ -939,9 +966,24 @@ public sealed class RealtimeValueService : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        _changeTimer.Dispose();
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+
+            // 先阻止新的绑定、读写和变化扫描进入旧 Runtime。必须在 _gate 下修改，
+            // 这样已经进入 Read/Write 的线程会先完成，后续线程只能看到停止状态。
+            _disposed = true;
+            _changing = true;
+        }
+
+        // Timer.Dispose() 不会等待已经在线程池中执行的回调。若此处直接返回，
+        // RuntimeHost 随后释放 PointArena 时，ScanChanges 仍可能通过缓存的
+        // PointSlotRef 访问已解除映射的内存并触发 AccessViolationException。
+        using var callbacksDrained = new ManualResetEvent(initialState: false);
+        if (_changeTimer.Dispose(callbacksDrained))
+            callbacksDrained.WaitOne();
+
         _host.RuntimeChanging -= OnRuntimeChanging;
         _host.RuntimeSwapped -= OnRuntimeSwapped;
     }

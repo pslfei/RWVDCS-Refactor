@@ -45,8 +45,11 @@ namespace RWVDCS.RemotingAdapter
         public event Action<int, long[], object[]> DataChanged;
         public event Action<ulong> RuntimeChanging;
         public event Action<ulong, long[]> RuntimeRebound;
-        /// <summary>事件管道在曾成功连接后再次接通，通常表示 Host 已重启或管道曾中断。</summary>
-        public event Action EventChannelReconnected;
+        /// <summary>
+        /// 事件管道连接成功。参数为 true 表示曾经连接过，通常意味着 Host 已重启或管道曾中断；
+        /// false 表示首次连接，用于覆盖 Adapter 先启动、Host 后启动的恢复场景。
+        /// </summary>
+        public event Action<bool> EventChannelConnected;
 
         public ulong RuntimeGeneration => _generation;
         public long ConnectionEpoch => Interlocked.Read(ref _connectionEpoch);
@@ -434,8 +437,7 @@ namespace RWVDCS.RemotingAdapter
                     pipe.Connect(_timeoutMs);
                     _eventPipe = pipe;
                     _log("已连接 Host 变化事件管道：" + _eventPipeName);
-                    if (connectedBefore)
-                        EventChannelReconnected?.Invoke();
+                    EventChannelConnected?.Invoke(connectedBefore);
                     connectedBefore = true;
                     while (!_stop.IsCancellationRequested && pipe.IsConnected)
                     {
