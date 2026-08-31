@@ -279,6 +279,7 @@ public static class MdbEngineeringReader
 
             blocks.Add(new BlockModel
             {
+                ID = blockId,
                 Name = algName,
                 FcName = fcName,
                 Description = Str(row["Description"]),

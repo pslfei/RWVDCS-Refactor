@@ -18,6 +18,9 @@ public sealed class EngineeringMetadataTests
         Assert.NotEqual(
             ProjectFingerprint.Compute(baseline),
             ProjectFingerprint.Compute(BuildModel(controllerAddress: "1002")));
+        Assert.NotEqual(
+            ProjectFingerprint.Compute(baseline),
+            ProjectFingerprint.Compute(BuildModel(blockId: 202)));
     }
 
     [Fact]
@@ -67,7 +70,8 @@ public sealed class EngineeringMetadataTests
         int lowAlarm1Priority = 1,
         int highAlarm3Priority = 1,
         string controllerAddress = "1001",
-        string pinDescription = "输入描述") => new()
+        string pinDescription = "输入描述",
+        int blockId = 201) => new()
     {
         ProjectPath = "engineering-metadata-test",
         Controllers =
@@ -97,6 +101,7 @@ public sealed class EngineeringMetadataTests
                 [
                     new BlockModel
                     {
+                        ID = blockId,
                         Name = "BLOCK001",
                         FcName = "TEST",
                         Description = "功能块描述",

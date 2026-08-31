@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using RWVDCS.Core.Blocks;
+using RWVDCS.Core.Types;
 using RWVDCS.Engineering;
 using RWVDCS.Runtime;
 
@@ -24,7 +26,30 @@ public sealed class RuntimeHostOptions
 
     /// <summary>Arena MMF 后备目录（null = 纯内存）。</summary>
     public string? ArenaDirectory { get; init; }
+
+    /// <summary>功能块管脚值持久化实现；默认写当前 Access MDB，测试可注入事务替身。</summary>
+    public IFcPinValueStore? FcPinValueStore { get; init; }
 }
+
+public sealed record FcPinValueUpdateResult(
+    string DpuName,
+    string AlgName,
+    int CldFCBlockId,
+    int DatabaseRecordId,
+    string FcName,
+    string PinName,
+    string PinType,
+    string MdbPath,
+    string DatabaseTable,
+    string DatabaseColumn,
+    string? PointName,
+    string OldDatabaseValue,
+    string NewDatabaseValue,
+    string? PersistedDatabaseValue,
+    bool DatabaseVerified,
+    object? OldRuntimeValue,
+    object? NewRuntimeValue,
+    string Fingerprint);
 
 /// <summary>工程版本档案条目（versions.json）。</summary>
 public sealed class VersionEntry
@@ -80,14 +105,17 @@ public sealed class RuntimeReadLease : IDisposable
 /// </summary>
 /// <remarks>
 /// 并发模型：结构性操作（装载/下装/工况加载）持 <see cref="_structureLock"/> 且经
-/// 调度器周期边界执行；点值/强制/参数写走运行时的原子小写入，不与扫描互斥（老系统同语义）。
+/// 调度器周期边界执行；普通点值/强制写走运行时原子小写入，功能码管脚持久化更新则在
+/// 结构锁内经周期边界协调 MDB、Runtime 与工程模型。
 /// </remarks>
 public sealed class RuntimeHost : IDisposable
 {
     private readonly RuntimeHostOptions _options;
     private readonly BlockCatalog _catalog;
+    private readonly IFcPinValueStore _fcPinValueStore;
     private readonly SemaphoreSlim _structureLock = new(1, 1);
     private readonly object _runtimeLeaseGate = new();
+    private readonly object _pinValueUpdateGate = new();
     private readonly List<VersionEntry> _versions = [];
     private int _activeRuntimeLeases;
     private bool _runtimeRetiring;
@@ -177,6 +205,204 @@ public sealed class RuntimeHost : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// 按 DPU/实例名在线修改 Constant 或未连接测点的 Input 管脚值：
+    /// MDB 事务、Runtime 字段和工程模型协同更新。
+    /// </summary>
+    public FcPinValueUpdateResult UpdateFcPinValue(
+        string dpuName,
+        string algName,
+        string pinName,
+        string pValue)
+    {
+        dpuName = RequireName(dpuName, nameof(dpuName));
+        algName = RequireName(algName, nameof(algName));
+        pinName = RequireName(pinName, nameof(pinName));
+        ArgumentNullException.ThrowIfNull(pValue);
+
+        _structureLock.Wait();
+        try
+        {
+            using RuntimeReadLease runtimeLease = AcquireRuntimeLease();
+            lock (_pinValueUpdateGate)
+                return UpdateFcPinValueCore(runtimeLease.Runtime, dpuName, algName, pinName, pValue);
+        }
+        finally
+        {
+            _structureLock.Release();
+        }
+    }
+
+    private FcPinValueUpdateResult UpdateFcPinValueCore(
+        DcsRuntime runtime,
+        string dpuName,
+        string algName,
+        string pinName,
+        string pValue)
+    {
+        if (!TryGetBlockModel(dpuName, algName, out BlockModel block))
+            throw new KeyNotFoundException($"未找到功能块实例：{dpuName}/{algName}");
+        if (block.ID <= 0)
+            throw new InvalidDataException($"功能块实例 {dpuName}/{algName} 缺少 Cld_FCBlock.ID");
+
+        DpuRuntime dpu = runtime.FindDpu(dpuName)
+            ?? throw new KeyNotFoundException($"当前 Runtime 中不存在 DPU：{dpuName}");
+        BlockCommand command = dpu.FindCommand(algName)
+            ?? throw new KeyNotFoundException($"当前 Runtime 中不存在功能块：{dpuName}/{algName}");
+
+        FieldInfo field = command.Fc.GetType().GetField(
+            pinName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)
+            ?? throw new KeyNotFoundException($"功能块 {algName} 不存在字段：{pinName}");
+        PinTypes pinType = field.GetCustomAttribute<PinTypeAttribute>()?.PinType ?? PinTypes.None;
+        if (pinType is not (PinTypes.Constant or PinTypes.Input) || field.IsInitOnly)
+            throw new InvalidOperationException(
+                $"字段 {field.Name} 的管脚类型为 {pinType}，仅允许修改 Constant 或未连接测点的 Input");
+
+        PinDetailModel modelPin = block.FindPin(field.Name)
+            ?? throw new KeyNotFoundException($"工程模型中不存在管脚：{dpuName}/{algName}.{field.Name}");
+        if (pinType == PinTypes.Input && !string.IsNullOrWhiteSpace(modelPin.PointName))
+            throw new InvalidOperationException(
+                $"输入管脚 {dpuName}/{algName}.{field.Name} 已连接测点 {modelPin.PointName}，不能修改 InitialValue");
+        string mdbPath = MdbPath
+            ?? throw new InvalidOperationException("当前工程没有可写入的 MDB 路径");
+
+        object? oldRuntimeFieldValue = field.GetValue(command.Fc);
+        object? oldRuntimeValue;
+        object newRuntimeValue;
+        if (pinType == PinTypes.Constant)
+        {
+            oldRuntimeValue = ClonePinValue(oldRuntimeFieldValue);
+            newRuntimeValue = ParseConstantValue(field.FieldType, pValue);
+        }
+        else
+        {
+            if (oldRuntimeFieldValue is not IValuable valuable)
+                throw new NotSupportedException(
+                    $"Input 字段 {field.Name} 的类型 {field.FieldType.FullName} 未实现 IValuable");
+            oldRuntimeValue = ClonePinValue(valuable.Value);
+            newRuntimeValue = ParseInputValue(field.FieldType, pValue);
+        }
+
+        object? oldModelValue = modelPin.DefaultValue;
+        bool oldHasDefaultValue = modelPin.HasDefaultValue;
+        object? oldSwapperValue = null;
+        bool oldSwapperHasDefaultValue = false;
+        bool swapperUpdated = false;
+
+        using IFcPinValueUpdate databaseUpdate = pinType == PinTypes.Constant
+            ? _fcPinValueStore.BeginConstantUpdate(mdbPath, block.ID, field.Name, pValue)
+            : _fcPinValueStore.BeginInputUpdate(mdbPath, block.ID, field.Name, pValue);
+        try
+        {
+            void ApplyNewValue()
+            {
+                SetRuntimePinValue(command.Fc, field, pinType, newRuntimeValue);
+                modelPin.DefaultValue = ClonePinValue(newRuntimeValue);
+                modelPin.HasDefaultValue = true;
+                if (Swapper != null)
+                {
+                    swapperUpdated = Swapper.TrySetPinDefault(
+                        dpuName,
+                        algName,
+                        field.Name,
+                        newRuntimeValue,
+                        hasDefaultValue: true,
+                        out oldSwapperValue,
+                        out oldSwapperHasDefaultValue);
+                    if (!swapperUpdated)
+                        throw new InvalidOperationException($"热更模型中不存在管脚：{dpuName}/{algName}.{field.Name}");
+                }
+            }
+
+            if (Scheduler != null)
+                Scheduler.RunAtCycleBoundary(ApplyNewValue);
+            else
+                ApplyNewValue();
+            databaseUpdate.Commit();
+        }
+        catch (Exception updateError)
+        {
+            bool restoreOldState = !databaseUpdate.CommitSucceeded || databaseUpdate.DatabaseRestored;
+            if (!restoreOldState)
+            {
+                // 数据库已提交且补偿失败时不能再盲目恢复 Runtime，否则会明确制造两边不一致。
+                // 保留新 Runtime/模型，记录绝对 MDB 目标并让接口返回失败，等待人工核验数据库状态。
+                if (PristineModel != null)
+                    Fingerprint = ProjectFingerprint.Compute(PristineModel);
+                Log.Error("管脚值",
+                    $"MDB 提交后状态无法确认且补偿失败，保留运行时新值：{databaseUpdate.MdbPath}，"
+                    + $"{databaseUpdate.DatabaseTable}.{databaseUpdate.DatabaseColumn}，"
+                    + $"ID={databaseUpdate.RecordId}；{updateError.Message}");
+                throw;
+            }
+
+            try
+            {
+                void RestoreOldValue()
+                {
+                    field.SetValue(command.Fc, oldRuntimeFieldValue);
+                    modelPin.DefaultValue = oldModelValue;
+                    modelPin.HasDefaultValue = oldHasDefaultValue;
+                    if (swapperUpdated)
+                    {
+                        Swapper!.TrySetPinDefault(
+                            dpuName,
+                            algName,
+                            field.Name,
+                            oldSwapperValue,
+                            oldSwapperHasDefaultValue,
+                            out _,
+                            out _);
+                    }
+                }
+
+                if (Scheduler != null)
+                    Scheduler.RunAtCycleBoundary(RestoreOldValue);
+                else
+                    RestoreOldValue();
+            }
+            catch (Exception restoreError)
+            {
+                throw new AggregateException(
+                    "管脚值更新失败，且运行时旧值恢复失败",
+                    updateError,
+                    restoreError);
+            }
+            throw;
+        }
+
+        if (PristineModel != null)
+            Fingerprint = ProjectFingerprint.Compute(PristineModel);
+        object? appliedValue = GetRuntimePinValue(command.Fc, field, pinType);
+        Log.Info("管脚值", $"{dpuName}/{algName}.{field.Name} [{pinType}]: "
+                     + $"{FormatPinValue(oldRuntimeValue)} → {FormatPinValue(appliedValue)} "
+                     + $"({databaseUpdate.MdbPath}；"
+                     + $"{databaseUpdate.DatabaseTable}.{databaseUpdate.DatabaseColumn}；"
+                     + $"ID={databaseUpdate.RecordId}；回读={databaseUpdate.PersistedValue}；"
+                     + $"verified={databaseUpdate.DatabaseVerified}；Cld_FCBlock_ID={block.ID})");
+
+        return new FcPinValueUpdateResult(
+            dpuName,
+            algName,
+            block.ID,
+            databaseUpdate.RecordId,
+            block.FcName,
+            field.Name,
+            pinType.ToString(),
+            databaseUpdate.MdbPath,
+            databaseUpdate.DatabaseTable,
+            databaseUpdate.DatabaseColumn,
+            databaseUpdate.PointName,
+            databaseUpdate.OldValue,
+            pValue,
+            databaseUpdate.PersistedValue,
+            databaseUpdate.DatabaseVerified,
+            ClonePinValue(oldRuntimeValue),
+            ClonePinValue(appliedValue),
+            Fingerprint);
+    }
+
     /// <summary>按控制器数据库 ID 查询当前代的控制器地址。</summary>
     public bool TryGetControllerAddress(int controllerId, out string address)
     {
@@ -199,10 +425,106 @@ public sealed class RuntimeHost : IDisposable
     {
         _options = options;
         _catalog = new BlockCatalog(options.BlocksAssembly);
+        _fcPinValueStore = options.FcPinValueStore ?? new MdbFcPinValueStore();
         Directory.CreateDirectory(options.DataDirectory);
         Store = new ConditionStore(options.DataDirectory);
         LoadVersionRegistry();
     }
+
+    private static string RequireName(string value, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("参数不能为空", parameterName);
+        return value.Trim();
+    }
+
+    private static object ParseConstantValue(Type type, string value)
+    {
+        if (type == typeof(string))
+            return value;
+        if (type == typeof(bool))
+        {
+            if (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return false;
+            throw new FormatException($"{value} 无法转换为 Boolean");
+        }
+        if (type.IsEnum)
+            return Enum.Parse(type, value, ignoreCase: true);
+        if (type.IsArray)
+        {
+            Type elementType = type.GetElementType()
+                ?? throw new NotSupportedException($"不支持的数组参数类型：{type.FullName}");
+            string[] parts = value.Length == 0 ? [] : value.Split(',');
+            Array result = Array.CreateInstance(elementType, parts.Length);
+            for (int i = 0; i < parts.Length; i++)
+                result.SetValue(ParseConstantValue(elementType, parts[i].Trim()), i);
+            return result;
+        }
+        if (type == typeof(char))
+        {
+            if (value.Length != 1)
+                throw new FormatException($"{value} 无法转换为 Char");
+            return value[0];
+        }
+        if (type.IsPrimitive || type == typeof(decimal))
+            return Convert.ChangeType(value, type, CultureInfo.InvariantCulture)
+                ?? throw new FormatException($"{value} 无法转换为 {type.Name}");
+        throw new NotSupportedException($"不支持在线修改的参数类型：{type.FullName}");
+    }
+
+    private static object ParseInputValue(Type fieldType, string value)
+        => fieldType == typeof(LA)
+            ? ParseConstantValue(typeof(float), value)
+            : fieldType == typeof(LD)
+                ? ParseConstantValue(typeof(bool), value)
+                : fieldType == typeof(LP)
+                    ? ParseConstantValue(typeof(ushort), value)
+                    : fieldType == typeof(LP32)
+                        ? ParseConstantValue(typeof(uint), value)
+                        : throw new NotSupportedException(
+                            $"不支持在线修改的 Input 管脚类型：{fieldType.FullName}");
+
+    private static void SetRuntimePinValue(
+        Function function,
+        FieldInfo field,
+        PinTypes pinType,
+        object value)
+    {
+        if (pinType == PinTypes.Constant)
+        {
+            field.SetValue(function, value);
+            return;
+        }
+
+        object boxedPin = field.GetValue(function)
+            ?? throw new InvalidOperationException($"Input 字段 {field.Name} 的值为空");
+        if (boxedPin is not IValuable valuable)
+            throw new NotSupportedException(
+                $"Input 字段 {field.Name} 的类型 {field.FieldType.FullName} 未实现 IValuable");
+
+        // IValuable 指向同一个装箱结构；写 Value 后再把完整结构写回字段，
+        // 从而只改变过程值并保留 Quality/IsForced/IsAlarm 等其他成员。
+        valuable.Value = value;
+        field.SetValue(function, boxedPin);
+    }
+
+    private static object? GetRuntimePinValue(Function function, FieldInfo field, PinTypes pinType)
+    {
+        object? fieldValue = field.GetValue(function);
+        return pinType == PinTypes.Input && fieldValue is IValuable valuable
+            ? valuable.Value
+            : fieldValue;
+    }
+
+    private static object? ClonePinValue(object? value)
+        => value is Array array ? array.Clone() : value;
+
+    private static string FormatPinValue(object? value)
+        => value is Array array
+            ? string.Join(",", array.Cast<object?>().Select(FormatPinValue))
+            : Convert.ToString(value, CultureInfo.InvariantCulture) ?? "null";
 
     // =================================================================
     // 项目装载

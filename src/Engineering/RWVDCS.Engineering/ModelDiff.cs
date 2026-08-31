@@ -178,6 +178,12 @@ public static class ModelDiff
                 continue;
             }
 
+            if (ob.ID != nb.ID)
+            {
+                report.Entries.Add(new DiffEntry(DiffKind.BlockParamChanged, oldC.Name, name,
+                    $"Cld_FCBlock.ID {ob.ID} → {nb.ID}"));
+            }
+
             CompareBlockPins(oldC.Name, ob, nb, report);
         }
 

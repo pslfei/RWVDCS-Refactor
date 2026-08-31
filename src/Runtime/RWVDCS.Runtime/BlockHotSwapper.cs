@@ -67,6 +67,33 @@ public sealed class BlockHotSwapper
     /// <summary>历代已退役 ALC 的弱引用（诊断泄漏用）。</summary>
     public IReadOnlyList<(int Generation, WeakReference Context)> RetiredContexts => _retired;
 
+    /// <summary>同步热更重建所使用的工程管脚默认值，避免后续热更恢复旧值。</summary>
+    public bool TrySetPinDefault(
+        string dpuName,
+        string blockName,
+        string pinName,
+        object? value,
+        bool hasDefaultValue,
+        out object? oldValue,
+        out bool oldHasDefaultValue)
+    {
+        oldValue = null;
+        oldHasDefaultValue = false;
+        if (!_blocksByDpu.TryGetValue(dpuName, out var blocks))
+            return false;
+        BlockModel? block = blocks.Values.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, blockName, StringComparison.OrdinalIgnoreCase));
+        PinDetailModel? pin = block?.FindPin(pinName);
+        if (pin == null)
+            return false;
+
+        oldValue = pin.DefaultValue;
+        oldHasDefaultValue = pin.HasDefaultValue;
+        pin.DefaultValue = value is Array array ? array.Clone() : value;
+        pin.HasDefaultValue = hasDefaultValue;
+        return true;
+    }
+
     /// <summary>
     /// 装载新一代块程序集并换代。程序集中所有带 FCName 特性的块类型都会参与替换；
     /// 运行时中不存在对应功能码的类型仅告警。

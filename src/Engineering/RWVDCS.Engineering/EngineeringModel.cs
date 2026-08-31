@@ -25,6 +25,7 @@ public sealed class EngineeringModel
             Points = c.Points, // PointModel 全部 init-only，不可变，可共享
             Blocks = c.Blocks.Select(b => new BlockModel
             {
+                ID = b.ID,
                 Name = b.Name,
                 FcName = b.FcName,
                 Description = b.Description,
@@ -101,6 +102,9 @@ public sealed class PointModel
 /// <summary>块定义。</summary>
 public sealed class BlockModel
 {
+    /// <summary>Cld_FCBlock.ID。</summary>
+    public int ID { get; init; }
+
     /// <summary>运行块名 AlgName，如 "1001$1$DCON5"。</summary>
     public required string Name { get; init; }
     /// <summary>功能码名 FunctionName，如 "DCON"。</summary>
@@ -137,8 +141,8 @@ public sealed class PinDetailModel
     /// <summary>是否取反（老系统 PinDetails.Reverse；Output 多点场景在 Command 构造时逐点重解析）。</summary>
     public bool Reversed { get; set; }
 
-    public bool HasDefaultValue { get; init; }
+    public bool HasDefaultValue { get; set; }
 
     /// <summary>float / float[] / string（与老系统 PinDetails&lt;float&gt;/&lt;float[]&gt;/&lt;string&gt; 对应）。</summary>
-    public object? DefaultValue { get; init; }
+    public object? DefaultValue { get; set; }
 }

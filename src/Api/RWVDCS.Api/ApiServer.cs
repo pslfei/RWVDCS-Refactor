@@ -965,6 +965,65 @@ public sealed class ApiServer : IAsyncDisposable
             return Results.Json(BuildBlockDetail(d, cmd));
         });
 
+        api.MapPut("/engineering/fc-pin/value", (FcPinValueRequest? request) =>
+        {
+            if (request == null)
+                return Results.Json(new { success = false, error = "请求体不能为空" }, statusCode: 400);
+
+            try
+            {
+                FcPinValueUpdateResult result = _host.UpdateFcPinValue(
+                    request.DpuName,
+                    request.AlgName,
+                    request.PinName,
+                    request.PValue);
+                return Results.Json(new
+                {
+                    success = true,
+                    result.DpuName,
+                    result.AlgName,
+                    result.CldFCBlockId,
+                    result.DatabaseRecordId,
+                    result.FcName,
+                    result.PinName,
+                    result.PinType,
+                    result.MdbPath,
+                    result.DatabaseTable,
+                    result.DatabaseColumn,
+                    result.PointName,
+                    result.OldDatabaseValue,
+                    result.NewDatabaseValue,
+                    result.PersistedDatabaseValue,
+                    result.DatabaseVerified,
+                    result.OldRuntimeValue,
+                    result.NewRuntimeValue,
+                    result.Fingerprint,
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.Json(new { success = false, error = ex.Message }, statusCode: 404);
+            }
+            catch (Exception ex) when (ex is ArgumentException
+                                       or FormatException
+                                       or InvalidDataException
+                                       or InvalidOperationException
+                                       or NotSupportedException)
+            {
+                return Results.Json(new { success = false, error = ex.Message }, statusCode: 400);
+            }
+            catch (Exception ex)
+            {
+                _host.Log.Error("管脚值", $"在线修改功能块管脚值失败：{ex.Message}");
+                return Results.Json(new
+                {
+                    success = false,
+                    error = "数据库或运行时管脚值更新失败",
+                    details = ex.Message,
+                }, statusCode: 500);
+            }
+        });
+
         // ---------------- 批量读写（Remoting 适配器/教练员站高频路径） ----------------
         // 名字形态与老系统订阅名一致：POINT、POINT.member、DPU$POINT.member（member 缺省 = buffer）
         api.MapPost("/values/read", (BatchReadRequest req) =>
@@ -2318,6 +2377,11 @@ public sealed class ApiServer : IAsyncDisposable
     public sealed record SetCycleRequest(float Seconds);
     public sealed record SetValueRequest(string Value);
     public sealed record SetFieldRequest(string Field, string Value);
+    public sealed record FcPinValueRequest(
+        string DpuName,
+        string AlgName,
+        string PinName,
+        string PValue);
     public sealed record ForceRequest(bool Forced, string? Value);
     public sealed record PinForceRequest(string Pin, bool Forced, string Value);
     public sealed record SaveEntryRequest(string Name, string? Comment);

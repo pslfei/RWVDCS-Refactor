@@ -57,6 +57,7 @@ public static class ProjectFingerprint
                 w.Write(c.Blocks.Count);
                 foreach (var b in c.Blocks)
                 {
+                    w.Write(b.ID);
                     w.Write(b.Name);
                     w.Write(b.FcName);
                     w.Write(b.Description ?? "");
