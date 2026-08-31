@@ -9,9 +9,11 @@ namespace RWVDCS.Blocks.RW
     {
         protected override void Run(ICommand cmd)
         {
-            bool nextQ = (!R) & (S | Q);
+            bool nextQ = (!R) & (S | OldQ);
             Q[0] = nextQ;
             QN[0] = !nextQ;
+
+            OldQ = Q;
         }
     }
 }

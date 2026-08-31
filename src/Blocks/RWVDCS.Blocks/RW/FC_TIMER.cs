@@ -54,8 +54,8 @@ namespace RWVDCS.Blocks.RW
 
         // --- 内部状态变量 (不作为引脚暴露) ---
         private bool _prevX = false;     // 上一运算周期的 X 状态
-        private bool _prevRST = false;   // 上一运算周期的 RST 状态
-        private bool _timing = false;    // 内部计时激活标志
+        private byte _lastMode = byte.MaxValue; // 上次模式；用 byte 替换原 _prevRST bool，保持状态槽总长度不变
+        private bool _timing = false;    // 计时/完成锁存状态（具体含义由 MODE 决定）
         // _cycleTime removed: scan cycle now taken from cmd.Dpu.Cycle in Run(). // 运算周期(秒)，实际应用中已替换为系统真实的扫描周期，如 cmd.DeltaTime
     }
 }

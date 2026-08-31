@@ -1,5 +1,6 @@
 ﻿using RWVDCS.Core.Blocks;
 using RWVDCS.Core.Types;
+using System;
 
 namespace RWVDCS.Blocks.RW
 {
@@ -16,11 +17,26 @@ namespace RWVDCS.Blocks.RW
 
             // 扫描周期(秒)，与 FC_DELAY / FC_ETIMER 等保持一致，取系统真实运算周期
             float dt = cmd.Dpu.Cycle;
+            float time = Math.Max(0.0f, TIME);
+
+            void ResetTimer()
+            {
+                OUT[0] = false;
+                _timing = false;
+                TRun[0] = 0.0f;
+            }
 
             // 2. 边沿检测逻辑
             bool xRise = (X & !_prevX);       // X 上升沿
             bool xFall = (!X & _prevX);       // X 下降沿
-            bool rstRise = (RST & !_prevRST); // RST 上升沿
+
+            // MODE 在线变化时，上一模式的 OUT/TRun/_timing 不能泄漏到新模式。
+            // 首次运行不在这里清零，由各模式按自己的空闲态规则规范化工程初值/快照值。
+            byte modeToken = MODE < byte.MaxValue ? (byte)MODE : (byte)(byte.MaxValue - 1);
+            bool firstExecution = _lastMode == byte.MaxValue;
+            if (!firstExecution && _lastMode != modeToken)
+                ResetTimer();
+            _lastMode = modeToken;
 
             // 3. 根据工作模式(MODE)选择
             switch (MODE)
@@ -28,35 +44,38 @@ namespace RWVDCS.Blocks.RW
                 case 0:
                     // ---------------------------------------------------------
                     // 模式 0: TD-PULSE 延时脉冲模块（不可重触发）
-                    // 行为: X 上升沿后 OUT 立即输出一个宽度为 TIME 的脉冲；脉冲输出期间 X 的变化
-                    //       不影响计时(不可重触发)；RST 复位优先级最高，RST=1 时 OUT 立即复位为 0、定时器清零。
+                    // 行为: X 上升沿后延时 TIME，再输出一个扫描周期的脉冲；延时期间忽略新的上升沿。
                     // ---------------------------------------------------------
                     if (RST)
                     {
-                        // RST 复位信号优先级最高，OUT 立即复位、计时清零
-                        OUT[0] = false;
-                        _timing = false;
-                        TRun[0] = 0.0f;
+                        ResetTimer();
                     }
                     else
                     {
-                        // 不可重触发: 仅在空闲(未计时)时响应上升沿，脉冲期间忽略新的上升沿
+                        bool startedThisCycle = false;
+                        bool pulseThisCycle = false;
+
                         if (xRise && !_timing)
                         {
-                            OUT[0] = true;  // 上升沿立即输出高电平
                             _timing = true;
                             TRun[0] = 0.0f;
+                            startedThisCycle = true;
                         }
 
                         if (_timing)
                         {
-                            TRun[0] = TRun + dt;
-                            if (TRun >= TIME)
+                            if (!startedThisCycle)
+                                TRun[0] = TRun + dt;
+
+                            if (TRun >= time)
                             {
-                                OUT[0] = false; // 脉冲宽度达到 TIME，输出复位为低
+                                pulseThisCycle = true;
                                 _timing = false;
                             }
                         }
+
+                        // 局部变量天然保证脉冲只保持当前一个运算周期，并清除错误的 OUT 默认高值。
+                        OUT[0] = pulseThisCycle;
                     }
                     break;
                 case 1:
@@ -64,29 +83,39 @@ namespace RWVDCS.Blocks.RW
                     // 模式 1: PULSE 脉冲输出模块（可重触发）
                     // 行为: X 上升沿后输出立即拉高，保持 TIME 后回落；期间 X 再次上升沿，TIME 重新计时(可重触发)。
                     // ---------------------------------------------------------
-                    if (rstRise)
+                    if (RST)
                     {
-                        OUT[0] = false;
-                        _timing = false;
-                        TRun[0] = 0.0f;
+                        ResetTimer();
                     }
                     else
                     {
-                        if (xRise && !RST)
+                        bool startedThisCycle = false;
+                        if (xRise)
                         {
                             OUT[0] = true;
                             _timing = true;
-                            TRun[0] = 0.0f; // 期间 X 再次出现上升沿，TIME 重新计时
+                            TRun[0] = 0.0f;
+                            startedThisCycle = true;
                         }
 
                         if (_timing)
                         {
-                            TRun[0] = TRun + dt;
-                            if (TRun >= TIME)
+                            OUT[0] = true;
+
+                            // 触发周期本身不扣减脉宽，确保 TIME 小于一个扫描周期时仍有一个可见脉冲。
+                            if (!startedThisCycle)
+                                TRun[0] = TRun + dt;
+
+                            if (!startedThisCycle && TRun >= time)
                             {
                                 OUT[0] = false;
                                 _timing = false;
                             }
+                        }
+                        else
+                        {
+                            // PULSE 的空闲态必须为低，不能继承工程默认值或其他模式的高输出。
+                            OUT[0] = false;
                         }
                     }
                     break;
@@ -96,38 +125,32 @@ namespace RWVDCS.Blocks.RW
                     // 模式 2: TD-ON 延时接通模块 (上电延时接通 TON)
                     // 行为: X 上升沿(非 RST)时开始计时，达 TIME 后 OUT 拉高；X 复位时 OUT 立即拉低。
                     // ---------------------------------------------------------
-                    if (rstRise)
+                    if ((bool)RST || !(bool)X)
                     {
-                        OUT[0] = false;
-                        _timing = false;
-                        TRun[0] = 0.0f;
+                        // TD-ON 在复位有效或 X 变低时立即回到空闲态。
+                        ResetTimer();
                     }
                     else
                     {
-                        if (xRise && !RST)
+                        bool startedThisCycle = false;
+                        if (xRise)
                         {
                             _timing = true;
                             TRun[0] = 0.0f;
-                        }
-
-                        if (!X)
-                        {
-                            // X 复位为低电平时，输出 OUT 立刻复位为低电平
-                            OUT[0] = false;
-                            _timing = false;
-                            TRun[0] = 0.0f;
+                            startedThisCycle = true;
                         }
 
                         if (_timing)
                         {
-                            if (TRun < TIME)
-                            {
+                            if (!startedThisCycle && TRun < time)
                                 TRun[0] = TRun + dt;
-                            }
-                            else
-                            {
-                                OUT[0] = true; // 计满延时时间后输出拉高为高电平
-                            }
+
+                            // 达到 TIME 的当前周期立即置位，不再额外延迟一个扫描周期。
+                            OUT[0] = TRun >= time;
+                        }
+                        else
+                        {
+                            OUT[0] = false;
                         }
                     }
                     break;
@@ -137,44 +160,45 @@ namespace RWVDCS.Blocks.RW
                     // 模式 3: TD-OFF 延时断开模块 (断电延时断开 TOF)
                     // 行为: X 上升沿后 OUT 立即拉高；X 下降沿开始计时，达 TIME 后 OUT 拉低。
                     // ---------------------------------------------------------
-                    if (rstRise)
+                    if (RST)
                     {
-                        OUT[0] = false;
+                        ResetTimer();
+                    }
+                    else if (X)
+                    {
+                        // TD-OFF 的接通方向为电平逻辑：X 为高时 OUT 必须立即为高，
+                        // 同时取消尚未完成的延时断开。
+                        OUT[0] = true;
                         _timing = false;
                         TRun[0] = 0.0f;
                     }
                     else
                     {
-                        if (xRise)
+                        bool startedThisCycle = false;
+                        if (xFall)
                         {
-                            OUT[0] = true;  // X 由 0 到 1，OUT 立即输出为 1
-                            _timing = false;
-                            TRun[0] = 0.0f;
-                        }
-                        else if (xFall & OUT)
-                        {
-                            // 在输出为高时 X 的下降沿开始计时
                             _timing = true;
                             TRun[0] = 0.0f;
+                            startedThisCycle = true;
                         }
 
                         if (_timing)
                         {
-                            if (X)
+                            if (!startedThisCycle)
+                                TRun[0] = TRun + dt;
+
+                            if (TRun >= time)
                             {
-                                // 计时未到时若 X 再次拉高，取消本次延时 (维持高电平)
+                                OUT[0] = false;
                                 _timing = false;
-                                TRun[0] = 0.0f;
                             }
                             else
-                            {
-                                TRun[0] = TRun + dt;
-                                if (TRun >= TIME)
-                                {
-                                    OUT[0] = false;
-                                    _timing = false;
-                                }
-                            }
+                                OUT[0] = true;
+                        }
+                        else
+                        {
+                            // X 为低且没有延时断开任务时，空闲输出必须为低。
+                            OUT[0] = false;
                         }
                     }
                     break;
@@ -184,30 +208,43 @@ namespace RWVDCS.Blocks.RW
                     // 模式 4: TD-ON-HOLD 延时接通保持模块
                     // 行为: X 上升沿后延时 TIME 拉高 OUT，并一直保持到 RST 复位。延时未到时 X 再次上升沿则重新计时。
                     // ---------------------------------------------------------
-                    if (rstRise)
+                    if (RST)
                     {
-                        OUT[0] = false;
-                        _timing = false;
-                        TRun[0] = 0.0f;
+                        ResetTimer();
                     }
                     else
                     {
-                        if (xRise)
+                        // 兼容升级前 MODE=4 的完成态：旧实现完成后为 OUT=true、_timing=false、TRun>=TIME。
+                        if (firstExecution && time > 0.0f && !_timing && (bool)OUT && TRun >= time)
+                            _timing = true;
+
+                        bool completed = _timing && TRun >= time;
+                        bool startedThisCycle = false;
+                        if (xRise && !completed)
                         {
                             _timing = true;
-                            TRun[0] = 0.0f; // 延时 TIME 内再次出现上升沿，重新计时
+                            TRun[0] = 0.0f;
+                            startedThisCycle = true;
                         }
 
                         if (_timing)
                         {
-                            TRun[0] = TRun + dt;
-                            if (TRun >= TIME)
-                            {
-                                OUT[0] = true; // 输出为高电平并一直保持
-                                _timing = false;
-                            }
+                            if (!startedThisCycle && TRun < time)
+                                TRun[0] = TRun + dt;
+
+                            // 完成后保留 _timing=true 作为内部锁存态，直到 RST 复位。
+                            OUT[0] = TRun >= time;
+                        }
+                        else
+                        {
+                            OUT[0] = false;
                         }
                     }
+                    break;
+
+                default:
+                    // 非法模式按安全空闲态处理，避免保留上一模式输出。
+                    ResetTimer();
                     break;
             }
 
@@ -234,7 +271,6 @@ namespace RWVDCS.Blocks.RW
 
             // 5. 更新历史状态
             _prevX = X;
-            _prevRST = RST;
         }
 
     }

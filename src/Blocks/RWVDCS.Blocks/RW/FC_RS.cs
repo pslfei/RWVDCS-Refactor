@@ -44,5 +44,8 @@ namespace RWVDCS.Blocks.RW
 		[PinDisplay("品质传递")]
 		public UInt32 QualityT = 0;
 
+		[PinType(PinTypes.Internal)]
+		public bool OldQ = false;
+
 	}
 }
