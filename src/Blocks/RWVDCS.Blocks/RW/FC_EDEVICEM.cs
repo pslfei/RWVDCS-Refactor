@@ -114,7 +114,7 @@ namespace RWVDCS.Blocks.RW
 
         [PinType(PinTypes.Output)]
         [PinDisplay("HMI状态打包点")]
-        public LA PACK = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
+        public LA TAG = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
 
         // ==================== Parameter ====================
         [PinType(PinTypes.Constant)]

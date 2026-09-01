@@ -231,7 +231,7 @@ namespace RWVDCS.Blocks.RW
             if (bFDev || opFl) packStatus |= (1u << 31);
 
             // 输出浮点型的 PACK，上位机再按 Bit 解析
-            PACK[0] = (float)packStatus;
+            TAG.Value = (float)packStatus;
 
             // =========================================================================
             // 8. 历史状态与 HMI 指令自解扣 (Consumer Pattern 消费机制)
