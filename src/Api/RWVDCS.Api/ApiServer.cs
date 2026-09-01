@@ -499,6 +499,39 @@ public sealed class ApiServer : IAsyncDisposable
             return Results.Json(values);
         });
 
+        api.MapPost("/dpu/pins/states", (CompatDpuPinRequest? request) =>
+        {
+            if (request == null || request.PinPaths == null || request.PinPaths.Count == 0)
+                return Results.Json(new { error = "请求体不能为空，需传入包含 Dpu 和 PinPaths 数组的对象" });
+            if (request.PinPaths.Count > LegacyMaxBatchItems)
+                return Results.Json(new { error = "单批最多 10,000 项" }, statusCode: StatusCodes.Status413PayloadTooLarge);
+
+            using var runtimeLease = RequireRuntime(out var rt);
+            var states = new Dictionary<string, CompatPinValueState?>(StringComparer.Ordinal);
+            var commandsByBlock = new Dictionary<string, BlockCommand?>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in request.PinPaths)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                int dot = path.LastIndexOf('.');
+                if (dot < 0)
+                    continue;
+
+                string blockName = path[..dot];
+                string pinName = path[(dot + 1)..];
+                if (!commandsByBlock.TryGetValue(blockName, out BlockCommand? cmd))
+                {
+                    cmd = TryFindBlock(rt, request.Dpu, blockName, out _, out var foundCommand)
+                        ? foundCommand
+                        : null;
+                    commandsByBlock[blockName] = cmd;
+                }
+                states[path] = cmd == null ? null : ReadBlockPinState(cmd, pinName);
+            }
+            return Results.Json(states);
+        });
+
         api.MapPost("/point/SetVariables", (CompatSetVariablesRequest? request) =>
         {
             if (request == null)
@@ -1497,6 +1530,7 @@ public sealed class ApiServer : IAsyncDisposable
         if (string.IsNullOrEmpty(path))
             return false;
         return path.Equals("/api/dpu/pins/values", StringComparison.OrdinalIgnoreCase)
+               || path.Equals("/api/dpu/pins/states", StringComparison.OrdinalIgnoreCase)
                || path.Equals("/api/point/SetVariables", StringComparison.OrdinalIgnoreCase)
                || path.Equals("/api/point/SetVariables2", StringComparison.OrdinalIgnoreCase)
                || path.Equals("/api/point/SubscribeBatch", StringComparison.OrdinalIgnoreCase)
@@ -1781,6 +1815,39 @@ public sealed class ApiServer : IAsyncDisposable
             return null;
         object? raw = fi.GetValue(cmd.Fc);
         return raw is IValuable valuable ? valuable.Value : raw;
+    }
+
+    private static CompatPinValueState? ReadBlockPinState(BlockCommand cmd, string pinName)
+    {
+        FieldInfo? field = cmd.Fc.GetType().GetField(pinName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field == null)
+            return null;
+
+        object? raw = field.GetValue(cmd.Fc);
+        object? value = raw is IValuable valuable ? valuable.Value : raw;
+        if (raw is not IPointOperation pointOperation)
+        {
+            return new CompatPinValueState(
+                FormatCompatString(value),
+                IsForced: false,
+                ForceValue: null);
+        }
+
+        bool isForced = pointOperation.IsForced != 0;
+        object? forceValue = pointOperation.GetMemberValue("forcevalue");
+        if (cmd.ForceStates != null && cmd.ForceStates.TryGetValue(field.Name, out var commandForce))
+        {
+            // 命令表包含尚未落到管脚结构的强制/解除请求，是当前权威状态。
+            isForced = commandForce.IsForced;
+            if (commandForce.IsForced)
+                forceValue = commandForce.ForceValue ?? forceValue;
+        }
+
+        return new CompatPinValueState(
+            FormatCompatString(value),
+            isForced,
+            FormatCompatString(forceValue));
     }
 
     private object? ReadCompatPointValue(DcsRuntime rt, string pointName)
@@ -2413,6 +2480,11 @@ public sealed class ApiServer : IAsyncDisposable
         public string Dpu { get; set; } = "";
         public List<string> PinPaths { get; set; } = [];
     }
+
+    public sealed record CompatPinValueState(
+        [property: JsonPropertyName("value")] string? Value,
+        [property: JsonPropertyName("isforced")] bool IsForced,
+        [property: JsonPropertyName("forcevalue")] string? ForceValue);
 
     public sealed class CompatSetVariablesRequest
     {
