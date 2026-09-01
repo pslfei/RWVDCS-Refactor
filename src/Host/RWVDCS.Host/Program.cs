@@ -116,7 +116,8 @@ internal static class Program
                 sw.Restart();
                 runtime.LoadSnapshot(loadDir);
                 sw.Stop();
-                Console.WriteLine($"[工况] 已加载 {loadDir}（{sw.ElapsedMilliseconds:N0} ms）");
+                Console.WriteLine($"[工况] 已加载 {loadDir}（{sw.ElapsedMilliseconds:N0} ms，"
+                                  + $"兼容迁移 {runtime.LastConditionCompatibilityMigrationCount:N0} 块）");
             }
             else if (firstRun)
             {

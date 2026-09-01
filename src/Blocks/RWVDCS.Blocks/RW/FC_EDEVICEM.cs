@@ -71,6 +71,38 @@ namespace RWVDCS.Blocks.RW
         [PinDisplay("弹簧未储能")]
         public LD FSpr = new LD(QualityTypes.Good, false, false, false, 0, false);
 
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI合闸指令脉冲")]
+        public LD CON = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI分闸指令脉冲")]
+        public LD COF = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI投自动指令脉冲")]
+        public LD CTA = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI切手动指令脉冲")]
+        public LD CTM = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI故障确认指令脉冲")]
+        public LD CAK = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI禁操翻转指令脉冲")]
+        public LD CFB = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI复位指令脉冲")]
+        public LD CRS = new LD(QualityTypes.Good, false, false, false, 0, false);
+
+        [PinType(PinTypes.Input)]
+        [PinDisplay("HMI调试翻转指令脉冲")]
+        public LD CDB = new LD(QualityTypes.Good, false, false, false, 0, false);
+
         // ==================== Output ====================
         [PinType(PinTypes.Output)]
         [PinDisplay("合闸指令输出")]
@@ -114,7 +146,7 @@ namespace RWVDCS.Blocks.RW
 
         [PinType(PinTypes.Output)]
         [PinDisplay("HMI状态打包点")]
-        public LA TAG = new LA(QualityTypes.Good, false, false, false, false, false, float.MaxValue, float.MinValue, 0.0f, 0, 0.0f);
+        public LP32 TAG = new LP32();
 
         // ==================== Parameter ====================
         [PinType(PinTypes.Constant)]
@@ -153,8 +185,9 @@ namespace RWVDCS.Blocks.RW
         [PinDisplay("手动优先级")]
         public UInt32 MP = 0;
 
-        // 页号与源端名定义 (与手册保持一致，隐藏)
-        // ... (保持您原有的 CONPAGE, CON 等定义不变)
+        [PinType(PinTypes.Constant)]
+        [PinDisplay("品质传递")]
+        public UInt32 QualityT = 0;
 
         // ==================== Internal (算法内部状态与 HMI 接口) ====================
         [PinType(PinTypes.Internal)]
@@ -166,9 +199,31 @@ namespace RWVDCS.Blocks.RW
         public bool oldFBOff = false;
 
         [PinType(PinTypes.Internal)]
+        public bool oldCON = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCOF = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCTA = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCTM = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCAK = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCFB = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCRS = false;
+        [PinType(PinTypes.Internal)]
+        public bool oldCDB = false;
+
+        [PinType(PinTypes.Internal)]
         public bool onCmdActive = false;
         [PinType(PinTypes.Internal)]
         public bool offCmdActive = false;
+
+        [PinType(PinTypes.Internal)]
+        public bool onPulseActive = false;
+        [PinType(PinTypes.Internal)]
+        public bool offPulseActive = false;
 
         [PinType(PinTypes.Internal)]
         public double onTimer = 0.0;
@@ -183,23 +238,5 @@ namespace RWVDCS.Blocks.RW
         public bool manualForbid = false;
         [PinType(PinTypes.Internal)]
         public bool debugMode = false;
-
-        // --- HMI 操作接口 (由上位机直接置位 true) ---
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdOn = false;     // 上位机点击“合闸”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdOff = false;    // 上位机点击“分闸”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdAuto = false;   // 上位机点击“投自动”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdManual = false; // 上位机点击“切手动”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdAck = false;    // 上位机点击“报警确认”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdReset = false;  // 上位机点击“复位”
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdForbid = false; // 上位机点击“禁操” (Toggle)
-        [PinType(PinTypes.Internal)]
-        public bool hmiCmdDebug = false;  // 上位机点击“调试” (Toggle)
     }
 }

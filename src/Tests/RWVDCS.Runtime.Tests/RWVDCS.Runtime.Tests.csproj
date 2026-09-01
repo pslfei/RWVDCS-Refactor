@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Api\RWVDCS.Api\RWVDCS.Api.csproj" />
+    <ProjectReference Include="..\..\Blocks\RWVDCS.Blocks\RWVDCS.Blocks.csproj" />
     <ProjectReference Include="..\..\Runtime\RWVDCS.Runtime\RWVDCS.Runtime.csproj" />
   </ItemGroup>
 

@@ -795,7 +795,8 @@ public sealed class RuntimeHost : IDisposable
             RegisterVersion(fingerprint, "condition", embeddedMdb, $"加载工况 {name}");
 
             Log.Info("工况", $"已加载工况 [{name}]（保存于 {manifest.SavedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}，" +
-                             $"指纹 {fingerprint}，{sw.ElapsedMilliseconds:N0} ms）");
+                             $"指纹 {fingerprint}，兼容迁移 {runtime.LastConditionCompatibilityMigrationCount:N0} 块，"
+                             + $"{sw.ElapsedMilliseconds:N0} ms）");
         }
         finally
         {

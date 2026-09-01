@@ -35,6 +35,9 @@ public sealed class DcsRuntime : IDisposable
 
     public IomapOwnership Iomap { get; }
 
+    /// <summary>最近一次 v1 工况加载中按白名单执行字段兼容迁移的块数量。</summary>
+    public int LastConditionCompatibilityMigrationCount { get; private set; }
+
     /// <summary>跨 DPU 名字表（热更换代重建绑定用）。</summary>
     internal Dictionary<string, PointSlotRef> GlobalSlots => _globalSlots;
 
@@ -206,24 +209,7 @@ public sealed class DcsRuntime : IDisposable
     /// </summary>
     public void LoadSnapshot(string directory)
     {
-        string manifestPath = Path.Combine(directory, ManifestFileName);
-        var manifest = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), SnapshotJsonContext.Default.SnapshotManifest)
-                       ?? throw new InvalidDataException($"工况清单损坏：{manifestPath}");
-        if (manifest.Version != SnapshotVersion)
-            throw new InvalidDataException($"工况版本 {manifest.Version} 不受支持（当前 {SnapshotVersion}）。");
-
-        var byName = manifest.Dpus.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
-        foreach (var dpu in Dpus)
-        {
-            if (!byName.TryGetValue(dpu.Name, out var entry))
-                throw new InvalidDataException($"工况中缺少 DPU：{dpu.Name}");
-
-            dpu.Arena.LoadSnapshotInPlace(Path.Combine(directory, entry.File));
-            dpu.CycleCount = (uint)entry.CycleCount;
-            dpu.Cycle = entry.CycleSeconds;
-        }
-
-        LoadBlockStates();
+        LastConditionCompatibilityMigrationCount = ConditionV1CompatLoader.Load(this, directory);
     }
 
     private static string SanitizeFileName(string name)

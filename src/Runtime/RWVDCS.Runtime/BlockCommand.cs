@@ -150,6 +150,12 @@ public sealed class BlockCommand : ICommand
         }
     }
 
+    /// <summary>
+    /// 兼容工况字段迁移后，仅同步一次输入而不执行功能码；用于初始化新增命令管脚的沿历史，
+    /// 防止保存时高电平在恢复后的首周期被误判为新命令。
+    /// </summary>
+    internal void SyncInputsForStateRestore() => SyncInputPins();
+
     // -----------------------------------------------------------------
     // 阶段 4（强制面）：应用/清除管脚强制（对齐 Command.Execute 的 _outputPinSync 强制分支）
     // -----------------------------------------------------------------
