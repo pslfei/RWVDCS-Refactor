@@ -30,7 +30,7 @@ namespace RWVDCS.Blocks.RW
 
 		[PinType(PinTypes.Output)]
 		[PinDisplay("品质报警输出")]
-		public LD QA = new LD(QualityTypes.Good, false, false, false,0,true);
+		public LD QA = new LD(QualityTypes.Good, false, false, false,0, false);
 
 		[PinType(PinTypes.Output)]
 		[PinDisplay("通讯故障")]
